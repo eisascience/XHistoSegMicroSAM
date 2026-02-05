@@ -24,6 +24,7 @@ shapely>=2.0.0
 # ML
 torch==2.6.0
 torchvision==0.21.0
+segment-anything
 micro-sam @ git+https://github.com/computational-cell-analytics/micro-sam.git@v1.7.1
 zarr>=2.16.0
 

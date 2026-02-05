@@ -16,7 +16,9 @@ from .image_proc import (
     overlay_mask_on_image,
     compute_mask_statistics
 )
-from .ml_models import MedSAMPredictor
+# MedSAM is being phased out - import from medsam_models only if explicitly needed
+# from .medsam_models import MedSAMPredictor  # QUARANTINED - do not import by default
+from .microsam_models import MicroSAMPredictor
 from .geojson_utils import (
     mask_to_polygons,
     polygons_to_geojson,
@@ -30,7 +32,7 @@ __all__ = [
     'postprocess_mask',
     'overlay_mask_on_image',
     'compute_mask_statistics',
-    'MedSAMPredictor',
+    'MicroSAMPredictor',
     'mask_to_polygons',
     'polygons_to_geojson',
     'save_geojson'
