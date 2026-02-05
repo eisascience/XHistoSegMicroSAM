@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  xhalo-analyzer:
+    build: .
+    container_name: xhalo-analyzer
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount local directories for data and models
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      # Halo API configuration
+      - HALO_API_URL=${HALO_API_URL:-http://mock-halo-api}
+      - HALO_API_KEY=${HALO_API_KEY:-}
+      # MedSAM configuration
+      - MEDSAM_MODEL_PATH=${MEDSAM_MODEL_PATH:-}
+      - DEVICE=${DEVICE:-cpu}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  default:
+    name: xhalo-network

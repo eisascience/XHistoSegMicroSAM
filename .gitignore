@@ -1,0 +1,104 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+temp/
+*.tmp
+*.log
+
+# Model weights
+models/*.pth
+models/*.ckpt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+# Streamlit
+.streamlit/secrets.toml
+
+# PyTorch models
+*.pth
+*.pt
+models/
+checkpoints/
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+cache/
+
+# Logs
+*.log
+logs/
+
+# Data files (large image files)
+*.svs
+*.ndpi
+*.tif
+*.tiff
+data/slides/
+data/output/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Streamlit
+.streamlit/
+
+# Data files
+*.tif
+*.tiff
+*.svs
+*.ndpi
+# Environment files
+.env
+.env.local
+
+# Docker volumes
+data/
+models/
