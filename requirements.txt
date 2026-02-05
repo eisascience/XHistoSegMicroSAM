@@ -20,8 +20,10 @@ opencv-python>=4.8.0
 # PyTorch 2.6.0+ supports Apple Silicon (MPS), CUDA, and CPU
 torch==2.6.0
 torchvision==0.21.0
-# Pin segment-anything to specific commit for reproducibility
-segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@6fdee8f2727f4506cfbbe553e23b895e27956588
+# MicroSAM for histopathology segmentation
+micro-sam>=1.0.0
+# Zarr for embedding storage
+zarr>=2.16.0
 
 # Utilities
 requests>=2.31.0

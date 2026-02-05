@@ -1,13 +1,13 @@
-"""XHaloPathAnalyzer - Main Streamlit Application
+"""XHistoSegMicroSAM - Main Streamlit Application
 
-Web-based GUI for custom image analysis on Halo digital pathology slides.
+Web-based GUI for histopathology image analysis with micro-sam integration.
 Provides interface for:
 - Authentication with Halo API
 - Slide selection and metadata viewing
 - ROI export and image processing
-- MedSAM segmentation analysis
+- MicroSAM instance segmentation analysis
 - GeoJSON export for Halo import
-Halo AI Workflow - Main Streamlit Application
+Histopathology AI Workflow - Main Streamlit Application
 Web-based GUI for digital pathology analysis with Halo API integration
 """
 
@@ -27,7 +27,7 @@ from utils.image_proc import (
     overlay_mask_on_image,
     compute_mask_statistics
 )
-from utils.ml_models import MedSAMPredictor as UtilsMedSAMPredictor, _ensure_rgb_uint8, _compute_tissue_bbox
+from utils.microsam_adapter import MicroSAMPredictor as UtilsMicroSAMPredictor, _ensure_rgb_uint8, _compute_tissue_bbox
 from utils.geojson_utils import (
     mask_to_polygons,
     polygons_to_geojson
@@ -56,7 +56,7 @@ CHANNEL_INDEX_MAP = {'R': 0, 'G': 1, 'B': 2}
 
 # Import local modules
 from xhalo.api import HaloAPIClient, MockHaloAPIClient
-from xhalo.ml import MedSAMPredictor as XHaloMedSAMPredictor, segment_tissue
+from xhalo.ml import MicroSAMPredictor as XHaloMicroSAMPredictor, segment_tissue
 from xhalo.utils import (
     load_image,
     resize_image,
@@ -68,8 +68,8 @@ from xhalo.utils import (
 
 # Page configuration
 st.set_page_config(
-    page_title="XHaloPathAnalyzer",
-    page_icon="",
+    page_title="XHistoSegMicroSAM",
+    page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -570,10 +570,12 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
     
     # Initialize predictor if needed
     if st.session_state.predictor is None:
-        st.session_state.predictor = UtilsMedSAMPredictor(
-            Config.MEDSAM_CHECKPOINT,
-            model_type=Config.MODEL_TYPE,
-            device=Config.DEVICE
+        st.session_state.predictor = UtilsMicroSAMPredictor(
+            model_type=Config.MICROSAM_MODEL_TYPE,
+            device=Config.DEVICE,
+            segmentation_mode="interactive",  # Default to interactive mode
+            tile_shape=Config.TILE_SHAPE,
+            halo=Config.HALO_SIZE
         )
     
     # Get channel configuration
@@ -1488,15 +1490,17 @@ def analysis_page():
                         
                         # Initialize predictor if needed
                         if st.session_state.predictor is None:
-                            st.info("Loading MedSAM model...")
-                            st.session_state.predictor = UtilsMedSAMPredictor(
-                                Config.MEDSAM_CHECKPOINT,
-                                model_type=Config.MODEL_TYPE,
-                                device=Config.DEVICE
+                            st.info("Loading MicroSAM model...")
+                            st.session_state.predictor = UtilsMicroSAMPredictor(
+                                model_type=Config.MICROSAM_MODEL_TYPE,
+                                device=Config.DEVICE,
+                                segmentation_mode="interactive",
+                                tile_shape=Config.TILE_SHAPE,
+                                halo=Config.HALO_SIZE
                             )
                         
                         # Run inference directly on original image (no preprocessing)
-                        st.info(f"Running MedSAM segmentation with {prompt_mode} prompt...")
+                        st.info(f"Running MicroSAM segmentation with {prompt_mode} prompt...")
                         
                         # Compute prompt box for visualization
                         prompt_box = None

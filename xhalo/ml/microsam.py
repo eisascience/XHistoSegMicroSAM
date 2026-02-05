@@ -1,0 +1,390 @@
+"""
+MicroSAM Segmentation Module
+
+Provides integration with micro-sam for histopathology image segmentation.
+Supports both interactive prompted segmentation and automatic instance segmentation.
+"""
+
+import torch
+import numpy as np
+from typing import Optional, Tuple, List, Union
+import logging
+from pathlib import Path
+import warnings
+
+logger = logging.getLogger(__name__)
+
+
+class MicroSAMPredictor:
+    """
+    Wrapper for micro-sam model inference with support for:
+    - Interactive prompted instance segmentation (box + point prompts)
+    - Automatic instance segmentation (apg, ais, amg modes)
+    - Tiled inference for large images
+    - Embeddings caching for faster inference
+    """
+    
+    def __init__(
+        self, 
+        model_type: str = "vit_b_histopathology",
+        device: Optional[str] = None,
+        tile_shape: Tuple[int, int] = (1024, 1024),
+        halo: Tuple[int, int] = (256, 256)
+    ):
+        """
+        Initialize MicroSAM predictor.
+        
+        Args:
+            model_type: Model architecture to use (default: vit_b_histopathology)
+                       Options: vit_b_histopathology, vit_l_histopathology, vit_b, vit_l, vit_h
+            device: Device to run inference on (cuda/mps/cpu). Auto-detected if None.
+            tile_shape: Tile size for tiled inference (height, width)
+            halo: Halo/overlap size for tiled inference (height, width)
+        """
+        # Auto-detect best available device
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
+        else:
+            self.device = device
+        
+        self.model_type = model_type
+        self.tile_shape = tile_shape
+        self.halo = halo
+        
+        logger.info(f"Initializing MicroSAM with model={model_type}, device={self.device}")
+        
+        # Import micro_sam modules
+        try:
+            from micro_sam.util import get_sam_model
+            self.predictor = get_sam_model(
+                model_type=model_type,
+                device=self.device
+            )
+            logger.info("MicroSAM model loaded successfully")
+        except ImportError as e:
+            logger.error(f"Failed to import micro_sam: {e}")
+            logger.error("Please install micro-sam: pip install micro-sam")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to initialize MicroSAM: {e}")
+            raise
+    
+    def ensure_rgb(self, image: np.ndarray) -> np.ndarray:
+        """
+        Ensure image is RGB format (H, W, 3) with uint8 dtype.
+        
+        Handles various input formats:
+        - Grayscale (H, W) or (H, W, 1): replicate to 3 channels
+        - RGB (H, W, 3): pass through
+        - RGBA (H, W, 4): drop alpha channel
+        - Multi-channel (H, W, C) where C > 4: select first 3 channels with warning
+        
+        Args:
+            image: Input image array
+            
+        Returns:
+            RGB image (H, W, 3) with uint8 dtype
+        """
+        # Handle grayscale
+        if image.ndim == 2:
+            # HxW -> HxWx3
+            image = np.stack([image, image, image], axis=-1)
+            logger.info("Converted grayscale (H,W) to RGB by replicating channel")
+        elif image.ndim == 3:
+            if image.shape[2] == 1:
+                # HxWx1 -> HxWx3
+                image = np.repeat(image, 3, axis=2)
+                logger.info("Converted grayscale (H,W,1) to RGB by replicating channel")
+            elif image.shape[2] == 3:
+                # Already RGB
+                pass
+            elif image.shape[2] == 4:
+                # RGBA -> RGB
+                image = image[:, :, :3]
+                logger.info("Converted RGBA to RGB by dropping alpha channel")
+            elif image.shape[2] > 4:
+                # Multi-channel -> select first 3
+                logger.warning(
+                    f"Image has {image.shape[2]} channels. "
+                    f"Selecting first 3 channels. This may change behavior - please verify."
+                )
+                image = image[:, :, :3]
+        else:
+            raise ValueError(f"Unsupported image shape: {image.shape}")
+        
+        # Ensure uint8
+        if image.dtype != np.uint8:
+            if image.max() <= 1.0:
+                # Normalized [0, 1] -> [0, 255]
+                image = (image * 255).astype(np.uint8)
+            else:
+                image = image.astype(np.uint8)
+        
+        return image
+    
+    def precompute_embeddings(
+        self,
+        image: np.ndarray,
+        embeddings_path: Union[str, Path],
+        tiled: bool = True
+    ) -> None:
+        """
+        Precompute and cache image embeddings for faster inference.
+        
+        Args:
+            image: RGB image array (H, W, 3)
+            embeddings_path: Path to save embeddings (zarr format)
+            tiled: Whether to use tiled embedding computation
+        """
+        from micro_sam.util import precompute_image_embeddings
+        
+        embeddings_path = Path(embeddings_path)
+        
+        # Check if embeddings already exist
+        if embeddings_path.exists():
+            logger.info(f"Embeddings already exist at {embeddings_path}, skipping precomputation")
+            return
+        
+        # Ensure RGB format
+        image = self.ensure_rgb(image)
+        
+        logger.info(f"Precomputing embeddings (tiled={tiled}) to {embeddings_path}")
+        
+        # Prepare kwargs
+        kwargs = {
+            "predictor": self.predictor,
+            "input_": image,
+            "save_path": str(embeddings_path),
+            "verbose": True
+        }
+        
+        if tiled:
+            kwargs.update({
+                "tile_shape": self.tile_shape,
+                "halo": self.halo
+            })
+        
+        try:
+            precompute_image_embeddings(**kwargs)
+            logger.info("Embeddings precomputed successfully")
+        except Exception as e:
+            logger.error(f"Failed to precompute embeddings: {e}")
+            raise
+    
+    def predict_from_prompts(
+        self,
+        image: np.ndarray,
+        embeddings_path: Optional[Union[str, Path]] = None,
+        boxes: Optional[np.ndarray] = None,
+        points: Optional[np.ndarray] = None,
+        point_labels: Optional[np.ndarray] = None,
+        multimasking: bool = False,
+        mask_threshold: Optional[float] = None,
+        tiled: bool = True,
+        optimize_memory: bool = False
+    ) -> np.ndarray:
+        """
+        Perform prompted instance segmentation.
+        
+        Args:
+            image: RGB image array (H, W, 3)
+            embeddings_path: Optional path to precomputed embeddings
+            boxes: Bounding box prompts (N, 4) in format [min_x, min_y, max_x, max_y]
+            points: Point prompts (N, 1, 2) in format [[[x, y]]]
+            point_labels: Point labels (N, 1) where 1=positive, 0=negative
+            multimasking: Whether to return multiple mask predictions
+            mask_threshold: Threshold for mask binarization
+            tiled: Whether to use tiled inference
+            optimize_memory: Optimize memory usage (may be slower)
+            
+        Returns:
+            Instance segmentation mask (H, W) with 0=background, 1..N=instance IDs
+        """
+        from micro_sam.inference import batched_inference, batched_tiled_inference
+        
+        # Ensure RGB format
+        image = self.ensure_rgb(image)
+        
+        # Select inference function
+        inference_fn = batched_tiled_inference if tiled else batched_inference
+        
+        # Prepare kwargs
+        kwargs = {
+            "predictor": self.predictor,
+            "image": image,
+            "batch_size": 1,
+            "return_instance_segmentation": True
+        }
+        
+        if embeddings_path is not None:
+            kwargs["embedding_path"] = str(embeddings_path)
+        
+        if tiled:
+            kwargs.update({
+                "tile_shape": self.tile_shape,
+                "halo": self.halo
+            })
+        
+        if boxes is not None:
+            kwargs["boxes"] = boxes
+        
+        if points is not None:
+            kwargs["points"] = points
+        
+        if point_labels is not None:
+            kwargs["point_labels"] = point_labels
+        
+        if multimasking:
+            kwargs["multimasking"] = multimasking
+        
+        if mask_threshold is not None:
+            kwargs["mask_threshold"] = mask_threshold
+        
+        logger.info(f"Running prompted instance segmentation (tiled={tiled})")
+        
+        try:
+            instance_mask = inference_fn(**kwargs)
+            logger.info(f"Segmentation complete: {np.unique(instance_mask).size - 1} instances found")
+            return instance_mask
+        except Exception as e:
+            logger.error(f"Failed to run prompted segmentation: {e}")
+            raise
+    
+    def predict_auto_instances(
+        self,
+        image: np.ndarray,
+        embeddings_path: Optional[Union[str, Path]] = None,
+        segmentation_mode: str = "apg",
+        min_size: int = 25,
+        foreground_threshold: float = 0.5,
+        center_distance_threshold: float = 0.5,
+        boundary_distance_threshold: float = 0.5,
+        nms_threshold: float = 0.7,
+        multimasking: bool = False,
+        tiled: bool = True
+    ) -> np.ndarray:
+        """
+        Perform automatic instance segmentation without prompts.
+        
+        Args:
+            image: RGB image array (H, W, 3)
+            embeddings_path: Optional path to precomputed embeddings
+            segmentation_mode: Segmentation mode ("apg", "ais", or "amg")
+                             - "apg": Automatic Instance Segmentation (Polygons) - recommended
+                             - "ais": Automatic Instance Segmentation
+                             - "amg": Automatic Mask Generation (SAM's original AMG)
+            min_size: Minimum object size in pixels
+            foreground_threshold: Threshold for foreground detection
+            center_distance_threshold: Distance threshold for center detection
+            boundary_distance_threshold: Distance threshold for boundary detection
+            nms_threshold: Non-maximum suppression threshold
+            multimasking: Whether to use multi-mask prediction
+            tiled: Whether to use tiled inference
+            
+        Returns:
+            Instance segmentation mask (H, W) with 0=background, 1..N=instance IDs
+        """
+        from micro_sam.instance_segmentation import get_instance_segmentation_generator
+        
+        # Ensure RGB format
+        image = self.ensure_rgb(image)
+        
+        # Precompute embeddings if path provided
+        if embeddings_path is not None:
+            self.precompute_embeddings(image, embeddings_path, tiled=tiled)
+        
+        logger.info(f"Running automatic instance segmentation (mode={segmentation_mode}, tiled={tiled})")
+        
+        # Get instance segmentation generator
+        try:
+            generator = get_instance_segmentation_generator(
+                predictor=self.predictor,
+                segmentation_mode=segmentation_mode,
+                min_size=min_size,
+                output_mode="binary_mask"  # Return binary masks for each instance
+            )
+        except Exception as e:
+            logger.error(f"Failed to create instance segmentation generator: {e}")
+            raise
+        
+        # Prepare inference kwargs
+        kwargs = {
+            "image": image,
+        }
+        
+        if embeddings_path is not None:
+            kwargs["embedding_path"] = str(embeddings_path)
+        
+        if tiled:
+            kwargs.update({
+                "tile_shape": self.tile_shape,
+                "halo": self.halo
+            })
+        
+        # Add mode-specific parameters
+        if segmentation_mode == "apg":
+            kwargs.update({
+                "foreground_threshold": foreground_threshold,
+                "center_distance_threshold": center_distance_threshold,
+                "boundary_distance_threshold": boundary_distance_threshold,
+            })
+        
+        if nms_threshold is not None:
+            kwargs["nms_threshold"] = nms_threshold
+        
+        if multimasking:
+            kwargs["multimasking"] = multimasking
+        
+        try:
+            # Generate instance segmentation
+            instance_mask = generator(**kwargs)
+            
+            # Ensure output is instance-labeled array
+            if isinstance(instance_mask, dict):
+                # Handle dict output if generator returns additional info
+                instance_mask = instance_mask.get("segmentation", instance_mask)
+            
+            num_instances = np.unique(instance_mask).size - 1 if 0 in np.unique(instance_mask) else np.unique(instance_mask).size
+            logger.info(f"Automatic segmentation complete: {num_instances} instances found")
+            
+            return instance_mask
+        except Exception as e:
+            logger.error(f"Failed to run automatic segmentation: {e}")
+            raise
+
+
+def segment_tissue(
+    image: np.ndarray,
+    method: str = "threshold",
+    **kwargs
+) -> np.ndarray:
+    """
+    Simple tissue segmentation utility for detecting tissue regions.
+    
+    Args:
+        image: RGB image array (H, W, 3)
+        method: Segmentation method ("threshold" or "otsu")
+        **kwargs: Additional method-specific parameters
+        
+    Returns:
+        Binary mask (H, W) with True for tissue regions
+    """
+    from skimage.color import rgb2gray
+    from skimage.filters import threshold_otsu
+    
+    # Convert to grayscale
+    gray = rgb2gray(image)
+    
+    if method == "otsu":
+        threshold = threshold_otsu(gray)
+        mask = gray < threshold  # Dark regions are tissue
+    else:  # threshold
+        threshold = kwargs.get("threshold", 0.8)
+        mask = gray < threshold
+    
+    return mask.astype(np.uint8) * 255
