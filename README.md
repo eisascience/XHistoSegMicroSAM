@@ -12,6 +12,8 @@ Histopathology instance segmentation using micro-sam with Streamlit interface.
 
 ## Installation
 
+### Standard Installation (pip)
+
 ```bash
 # Create environment
 python3 -m venv venv
@@ -23,6 +25,44 @@ pip install -r requirements.txt
 # For macOS with Homebrew
 brew install openslide
 ```
+
+### Install with uv (Recommended)
+
+[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver. To install with uv:
+
+```bash
+# Clone the repository
+git clone https://github.com/eisascience/XHistoSegMicroSAM.git
+cd XHistoSegMicroSAM
+
+# Install Python 3.11 via uv
+uv python install 3.11
+
+# Create virtual environment
+uv venv --python 3.11
+
+# Activate the environment
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+uv pip install -r requirements-uv.txt
+
+# Verify micro-sam installation
+python -c "import micro_sam; print('micro_sam OK', micro_sam.__version__)"
+
+# Optional: Set MicroSAM cache directory
+export MICROSAM_CACHEDIR="$PWD/.cache/microsam"
+```
+
+**Note about link-mode warning**: During installation, you may see a warning:
+```
+Failed to clone files; falling back to full copy
+```
+This is not an error and installation will proceed normally. If you prefer to suppress this warning, you can set:
+```bash
+export UV_LINK_MODE=copy
+```
+or use `--link-mode=copy` when running uv commands.
 
 ## Configuration
 
