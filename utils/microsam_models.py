@@ -38,8 +38,9 @@ class MicroSAMPredictor:
         Initialize MicroSAM predictor.
         
         Args:
-            model_type: Model architecture (default: vit_b_histopathology)
-                       Options: vit_b_histopathology, vit_l_histopathology, vit_b, vit_l, vit_h
+            model_type: Model architecture to use (default: vit_b_histopathology)
+                       Histopathology models: vit_b_histopathology, vit_l_histopathology
+                       Standard SAM models: vit_b, vit_l, vit_h
             device: Device to run on (cuda/mps/cpu). Auto-detected if None.
             tile_shape: Tile size for tiled inference (height, width)
             halo: Halo/overlap size for tiled inference (height, width)
@@ -114,7 +115,9 @@ class MicroSAMPredictor:
                 # Multi-channel -> select first 3
                 logger.warning(
                     f"Image has {image.shape[2]} channels. "
-                    f"Selecting first 3 channels. This may change behavior - please verify."
+                    f"Selecting first 3 channels as RGB. If your channels represent non-RGB data "
+                    f"(e.g., fluorescence), results may be incorrect. Consider converting to RGB "
+                    f"before calling this method."
                 )
                 image = image[:, :, :3]
         else:
@@ -399,7 +402,8 @@ class MicroSAMPredictor:
             if isinstance(instance_mask, dict):
                 instance_mask = instance_mask.get("segmentation", instance_mask)
             
-            num_instances = np.unique(instance_mask).size - 1 if 0 in np.unique(instance_mask) else np.unique(instance_mask).size
+            unique_vals = np.unique(instance_mask)
+            num_instances = unique_vals.size - 1 if 0 in unique_vals else unique_vals.size
             logger.info(f"Automatic segmentation complete: {num_instances} instances found")
             
             return instance_mask

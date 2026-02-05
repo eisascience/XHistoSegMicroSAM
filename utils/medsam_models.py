@@ -1,7 +1,11 @@
 """
-ML Model Integration
+MedSAM Model Integration (Quarantined)
 
-Wrapper for MedSAM and other segmentation models.
+This module contains the original MedSAM wrapper and is no longer imported by default.
+For active development, use utils.microsam_models.MicroSAMPredictor instead.
+
+The MedSAM predictor requires the segment_anything package and a trained MedSAM checkpoint.
+It has been quarantined to avoid import errors at startup.
 """
 
 import torch
