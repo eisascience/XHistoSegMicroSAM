@@ -54,9 +54,32 @@ class Config:
     # Local Mode (bypass Halo API requirement)
     LOCAL_MODE = os.getenv("LOCAL_MODE", "false").lower() == "true"
     
-    # Model Settings
-    MEDSAM_CHECKPOINT = os.getenv("MEDSAM_CHECKPOINT", "./models/medsam_vit_b.pth")
-    MODEL_TYPE = os.getenv("MODEL_TYPE", "vit_b")  # vit_b, vit_l, vit_h
+    # MicroSAM Model Settings
+    MICROSAM_MODEL_TYPE = os.getenv("MICROSAM_MODEL_TYPE", "vit_b_histopathology")
+    MICROSAM_CACHEDIR = os.getenv("MICROSAM_CACHEDIR", None)  # Model cache directory (optional)
+    
+    # Tiling Settings for Large Images
+    try:
+        TILE_SHAPE = tuple(map(int, os.getenv("TILE_SHAPE", "1024,1024").split(",")))
+        if len(TILE_SHAPE) != 2:
+            raise ValueError("TILE_SHAPE must have exactly 2 values")
+    except (ValueError, TypeError):
+        logger.error("TILE_SHAPE must be two comma-separated integers, using default: 1024,1024")
+        TILE_SHAPE = (1024, 1024)
+    
+    try:
+        HALO_SIZE = tuple(map(int, os.getenv("HALO_SIZE", "256,256").split(",")))
+        if len(HALO_SIZE) != 2:
+            raise ValueError("HALO_SIZE must have exactly 2 values")
+    except (ValueError, TypeError):
+        logger.error("HALO_SIZE must be two comma-separated integers, using default: 256,256")
+        HALO_SIZE = (256, 256)
+    
+    ENABLE_TILING = os.getenv("ENABLE_TILING", "true").lower() == "true"
+    
+    # Embeddings Cache Settings
+    ENABLE_EMBEDDINGS_CACHE = os.getenv("ENABLE_EMBEDDINGS_CACHE", "false").lower() == "true"
+    EMBEDDINGS_CACHE_DIR = os.getenv("EMBEDDINGS_CACHE_DIR", "./cache/embeddings")
     
     # Application Settings
     try:
@@ -122,10 +145,6 @@ class Config:
                 errors.append("HALO_API_ENDPOINT is required")
             if not cls.HALO_API_TOKEN:
                 errors.append("HALO_API_TOKEN is required")
-        
-        # Check model checkpoint exists
-        if not Path(cls.MEDSAM_CHECKPOINT).exists():
-            logger.warning(f"MedSAM checkpoint not found at {cls.MEDSAM_CHECKPOINT}")
             
         # Validate numeric settings
         if cls.MAX_IMAGE_SIZE_MB <= 0:
@@ -136,7 +155,8 @@ class Config:
         
         # Create directories if they don't exist
         Path(cls.TEMP_DIR).mkdir(parents=True, exist_ok=True)
-        Path("./models").mkdir(parents=True, exist_ok=True)
+        if cls.ENABLE_EMBEDDINGS_CACHE:
+            Path(cls.EMBEDDINGS_CACHE_DIR).mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Configuration validated successfully")
         logger.info(f"Using device: {cls.DEVICE}")
@@ -151,7 +171,8 @@ class Config:
         """Log current configuration (excluding sensitive data)"""
         logger.info("=== Configuration ===")
         logger.info(f"API Endpoint: {cls.HALO_API_ENDPOINT}")
-        logger.info(f"Model Checkpoint: {cls.MEDSAM_CHECKPOINT}")
+        logger.info(f"MicroSAM Model: {cls.MICROSAM_MODEL_TYPE}")
         logger.info(f"Device: {cls.DEVICE}")
         logger.info(f"Temp Directory: {cls.TEMP_DIR}")
+        logger.info(f"Tiling: {cls.ENABLE_TILING} (tile_shape={cls.TILE_SHAPE}, halo={cls.HALO_SIZE})")
         logger.info("====================")

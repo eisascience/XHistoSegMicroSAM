@@ -50,6 +50,51 @@ def mask_to_polygons(mask: np.ndarray, min_area: int = 100) -> List[np.ndarray]:
         raise
 
 
+def instance_mask_to_polygons(
+    instance_mask: np.ndarray, 
+    min_area: int = 100
+) -> List[Tuple[int, np.ndarray]]:
+    """
+    Convert instance-labeled mask to list of polygon contours with instance IDs.
+    
+    Each instance (non-zero integer value) in the mask is converted to a separate polygon.
+    
+    Args:
+        instance_mask: Instance mask (H, W) with 0=background, 1..N=instance IDs
+        min_area: Minimum polygon area in pixels (smaller polygons filtered out)
+        
+    Returns:
+        List of (instance_id, polygon) tuples where polygon is (N, 2) array with (row, col) coords
+    """
+    try:
+        # Get unique instance IDs (excluding background=0)
+        instance_ids = np.unique(instance_mask)
+        instance_ids = instance_ids[instance_ids > 0]
+        
+        polygons_with_ids = []
+        
+        for instance_id in instance_ids:
+            # Create binary mask for this instance
+            binary_mask = (instance_mask == instance_id).astype(float)
+            
+            # Find contours for this instance
+            contours = measure.find_contours(binary_mask, 0.5)
+            
+            # Usually there's one main contour per instance, but handle multiple
+            for contour in contours:
+                if len(contour) >= 3:  # Need at least 3 points for polygon
+                    area = polygon_area(contour)
+                    if area >= min_area:
+                        polygons_with_ids.append((int(instance_id), contour))
+        
+        logger.info(f"Extracted {len(polygons_with_ids)} polygons from {len(instance_ids)} instances")
+        return polygons_with_ids
+        
+    except Exception as e:
+        logger.error(f"Failed to extract polygons from instance mask: {str(e)}")
+        raise
+
+
 def polygon_area(polygon: np.ndarray) -> float:
     """
     Calculate polygon area using shoelace formula.
@@ -141,6 +186,68 @@ def polygons_to_geojson(polygons: List[np.ndarray],
     }
     
     logger.info(f"Created GeoJSON with {len(features)} features")
+    
+    return geojson
+
+
+def instance_polygons_to_geojson(
+    polygons_with_ids: List[Tuple[int, np.ndarray]], 
+    properties: Dict = None,
+    simplify: bool = True,
+    tolerance: float = 1.0
+) -> Dict:
+    """
+    Convert instance polygons to GeoJSON FeatureCollection.
+    
+    Each polygon includes its instance ID in the properties.
+    
+    Args:
+        polygons_with_ids: List of (instance_id, polygon) tuples
+        properties: Optional base properties to add to each feature
+        simplify: Whether to simplify polygons
+        tolerance: Simplification tolerance
+        
+    Returns:
+        GeoJSON FeatureCollection dictionary
+    """
+    features = []
+    
+    for instance_id, polygon in polygons_with_ids:
+        # Simplify polygon if requested
+        if simplify:
+            polygon = simplify_polygon(polygon, tolerance=tolerance)
+        
+        # Convert from (row, col) to (x, y) and close polygon
+        coords = [[float(point[1]), float(point[0])] for point in polygon]
+        coords.append(coords[0])  # Close polygon
+        
+        # Create feature with instance_id
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [coords]
+            },
+            "properties": {
+                "id": instance_id,
+                "instance_id": instance_id,
+                "object_type": "annotation"
+            }
+        }
+        
+        # Add custom properties
+        if properties:
+            feature["properties"].update(properties)
+        
+        features.append(feature)
+    
+    # Create FeatureCollection
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+    
+    logger.info(f"Created GeoJSON with {len(features)} instance features")
     
     return geojson
 
