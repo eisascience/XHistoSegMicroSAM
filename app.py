@@ -1651,21 +1651,21 @@ def analysis_page():
                     if result.get('img_with_box') is not None:
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
-                            st.image(result['image'], caption="Original", use_column_width="always")
+                            st.image(result['image'], caption="Original", use_container_width="always")
                         with col2:
-                            st.image(mask_vis, caption="Mask", clamp=True, use_column_width="always")
+                            st.image(mask_vis, caption="Mask", clamp=True, use_container_width="always")
                         with col3:
-                            st.image(result['overlay'], caption="Overlay", use_column_width="always")
+                            st.image(result['overlay'], caption="Overlay", use_container_width="always")
                         with col4:
-                            st.image(result['img_with_box'], caption="Prompt Box", use_column_width="always")
+                            st.image(result['img_with_box'], caption="Prompt Box", use_container_width="always")
                     else:
                         col1, col2, col3 = st.columns(3)
                         with col1:
-                            st.image(result['image'], caption="Original", use_column_width="always")
+                            st.image(result['image'], caption="Original", use_container_width="always")
                         with col2:
-                            st.image(mask_vis, caption="Mask", clamp=True, use_column_width="always")
+                            st.image(mask_vis, caption="Mask", clamp=True, use_container_width="always")
                         with col3:
-                            st.image(result['overlay'], caption="Overlay", use_column_width="always")
+                            st.image(result['overlay'], caption="Overlay", use_container_width="always")
                     
                     # Show instance segmentation if available
                     if result.get('instance_mask') is not None and result['instance_mask'] is not None:
@@ -1689,7 +1689,7 @@ def analysis_page():
                                 mask_i = instance_mask == i
                                 instance_vis[mask_i] = (colors[color_idx][:3] * 255).astype(np.uint8)
                             
-                            st.image(instance_vis, caption="Instance Segmentation", use_column_width="always")
+                            st.image(instance_vis, caption="Instance Segmentation", use_container_width="always")
                     
                     # Show channel masks if multi-channel
                     if result.get('channel_masks'):
@@ -1699,7 +1699,7 @@ def analysis_page():
                         for idx, (channel_name, ch_mask) in enumerate(channel_masks.items()):
                             with cols[idx]:
                                 ch_mask_vis = (ch_mask > 0).astype(np.uint8) * 255
-                                st.image(ch_mask_vis, caption=f"{channel_name} Channel", use_column_width="always")
+                                st.image(ch_mask_vis, caption=f"{channel_name} Channel", use_container_width="always")
                     
                 elif item['status'] == 'failed':
                     st.error(f"**Error:** {item['error']}")
