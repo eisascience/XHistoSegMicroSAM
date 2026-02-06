@@ -1307,7 +1307,7 @@ def analysis_page():
             st.warning("⚠️ No processed images found. Please complete channel processing in the **Channels** tab first.")
             st.stop()
         
-        st.info(f"Image Queue: {len(st.session_state.images)} image(s)")
+        st.info(f"Image Queue: {len(ready_images)} ready, {len(st.session_state.images)} total image(s)")
         
         # Check elf availability and show warning if needed
         from xhalo.ml import is_elf_available, get_elf_info_message
@@ -1620,8 +1620,8 @@ def analysis_page():
         st.subheader("Queue Status")
         
         for i, item in enumerate(st.session_state.images):
-            with st.expander(f"{i+1}. {item['name']} - {item['status'].upper()}", expanded=(item['status'] in ['processing', 'done'])):
-                if item['status'] == 'done' and item.get('result'):
+            with st.expander(f"{i+1}. {item['name']} - {item.get('status', 'unknown').upper()}", expanded=(item.get('status') in ['processing', 'done'])):
+                if item.get('status') == 'done':
                     # Display results
                     result = item.get('result')
                     
