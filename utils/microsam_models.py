@@ -270,6 +270,7 @@ class MicroSAMPredictor:
         inference_fn = batched_inference
         
         # Prepare kwargs
+        # Note: batched_inference in v1.3.0 does not support tile_shape and halo parameters
         kwargs = {
             "predictor": self.predictor,
             "image": image_rgb,
@@ -279,12 +280,6 @@ class MicroSAMPredictor:
         
         if embeddings_path is not None:
             kwargs["embedding_path"] = str(embeddings_path)
-        
-        if tiled:
-            kwargs.update({
-                "tile_shape": self.tile_shape,
-                "halo": self.halo
-            })
         
         if boxes_prompt is not None:
             kwargs["boxes"] = boxes_prompt
@@ -373,18 +368,13 @@ class MicroSAMPredictor:
             raise
         
         # Prepare inference kwargs
+        # Note: tile_shape and halo are not supported by the generator in v1.3.0
         kwargs = {
             "image": image,
         }
         
         if embeddings_path is not None:
             kwargs["embedding_path"] = str(embeddings_path)
-        
-        if tiled:
-            kwargs.update({
-                "tile_shape": self.tile_shape,
-                "halo": self.halo
-            })
         
         # Add mode-specific parameters
         if segmentation_mode == "apg":
