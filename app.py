@@ -1298,8 +1298,14 @@ def analysis_page():
     if is_local_mode:
         # Local mode with multi-image queue
         if not st.session_state.images:
-            st.warning("Please upload images first in the Image Upload tab")
-            return
+            st.info("👈 Please go to the **Channels** tab to upload and process images first.")
+            st.stop()
+        
+        # Check if any images are ready (processed in Channels tab)
+        ready_images = [img for img in st.session_state.images if img.get('status') == 'done' and img.get('processed_input') is not None]
+        if not ready_images:
+            st.warning("⚠️ No processed images found. Please complete channel processing in the **Channels** tab first.")
+            st.stop()
         
         st.info(f"Image Queue: {len(st.session_state.images)} image(s)")
         
@@ -1615,14 +1621,28 @@ def analysis_page():
         
         for i, item in enumerate(st.session_state.images):
             with st.expander(f"{i+1}. {item['name']} - {item['status'].upper()}", expanded=(item['status'] in ['processing', 'done'])):
-                if item['status'] == 'done' and item['result']:
+                if item['status'] == 'done' and item.get('result'):
                     # Display results
-                    result = item['result']
+                    result = item.get('result')
+                    
+                    # Validate result is not None
+                    if result is None:
+                        st.warning(f"⚠️ No results available for **{item['name']}**. Please process channels first.")
+                        continue
+                    
+                    # Validate result has required data
+                    if not isinstance(result, dict):
+                        st.error(f"Invalid result data for {item['name']}")
+                        continue
+                    
+                    if 'mask' not in result:
+                        st.warning(f"No mask data found for {item['name']}")
+                        continue
                     
                     # Statistics
                     st.write("**Statistics**")
                     col1, col2, col3 = st.columns(3)
-                    stats = result['statistics']
+                    stats = result.get('statistics', {})
                     
                     with col1:
                         st.metric("Positive Pixels", f"{stats['num_positive_pixels']:,}")
@@ -2164,8 +2184,14 @@ def tabulation_page():
     # Build summary table
     summary_data = []
     for item in processed_images:
-        result = item['result']
-        stats = result['statistics']
+        result = item.get('result')
+        
+        # Validate result
+        if not result or not isinstance(result, dict):
+            logger.warning(f"Invalid result for {item['name']}")
+            continue
+        
+        stats = result.get('statistics', {})
         
         row = {
             'Filename': item['name'],
@@ -2221,7 +2247,12 @@ def tabulation_page():
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                     for item in processed_images:
-                        result = item['result']
+                        result = item.get('result')
+                        
+                        # Validate result
+                        if not result or not isinstance(result, dict) or 'mask' not in result:
+                            logger.warning(f"Invalid result for {item['name']}, skipping")
+                            continue
                         
                         # Add binary mask as PNG
                         mask = result.get('binary_mask', result['mask'])
@@ -2254,7 +2285,12 @@ def tabulation_page():
     
     for i, item in enumerate(processed_images):
         with st.expander(f"{i+1}. {item['name']}"):
-            result = item['result']
+            result = item.get('result')
+            
+            # Validate result
+            if not result or not isinstance(result, dict) or 'mask' not in result:
+                st.warning(f"Invalid result data for {item['name']}")
+                continue
             
             col_a, col_b = st.columns(2)
             
