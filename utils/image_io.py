@@ -399,7 +399,7 @@ def apply_gaussian_smooth(data: np.ndarray, sigma: float) -> np.ndarray:
     data_float = data.astype(np.float32)
     
     # Gaussian blur
-    kernel_size = int(2 * np.ceil(3 * sigma) + 1)  # 6*sigma + 1, always odd
+    kernel_size = int(2 * np.ceil(3 * sigma) + 1)  # 2*ceil(3*sigma) + 1, always odd
     smoothed = cv2.GaussianBlur(data_float, (kernel_size, kernel_size), sigma)
     
     return smoothed.astype(data.dtype)

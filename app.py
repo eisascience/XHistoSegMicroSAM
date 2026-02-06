@@ -835,8 +835,10 @@ def image_upload_page():
                             dims = f"{shape[1]} × {shape[0]} (gray)"
                         elif len(shape) == 3:
                             if img_info['kind'] == 'multichannel':
-                                dims = f"{shape[1]} × {shape[2]} × {shape[0]}ch"
+                                # shape is (C, H, W)
+                                dims = f"{shape[2]} × {shape[1]} × {shape[0]}ch"
                             else:
+                                # shape is (H, W, 3) for RGB
                                 dims = f"{shape[1]} × {shape[0]} (RGB)"
                         else:
                             dims = str(shape)
