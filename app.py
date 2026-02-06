@@ -1644,13 +1644,17 @@ def analysis_page():
                     col1, col2, col3 = st.columns(3)
                     stats = result.get('statistics', {})
                     
-                    with col1:
-                        st.metric("Positive Pixels", f"{stats['num_positive_pixels']:,}")
-                    with col2:
-                        st.metric("Coverage", f"{stats['coverage_percent']:.2f}%")
-                    with col3:
-                        if 'area_mm2' in stats:
-                            st.metric("Area", f"{stats['area_mm2']:.4f} mm²")
+                    # Validate statistics data
+                    if not stats or not isinstance(stats, dict):
+                        st.warning("Statistics data is not available")
+                    else:
+                        with col1:
+                            st.metric("Positive Pixels", f"{stats.get('num_positive_pixels', 0):,}")
+                        with col2:
+                            st.metric("Coverage", f"{stats.get('coverage_percent', 0):.2f}%")
+                        with col3:
+                            if 'area_mm2' in stats:
+                                st.metric("Area", f"{stats['area_mm2']:.4f} mm²")
                     
                     # Visualizations
                     st.write("**Visualizations**")
@@ -2193,11 +2197,16 @@ def tabulation_page():
         
         stats = result.get('statistics', {})
         
+        # Skip if no valid statistics
+        if not stats or not isinstance(stats, dict):
+            logger.warning(f"No valid statistics for {item['name']}")
+            continue
+        
         row = {
             'Filename': item['name'],
-            'Positive Pixels': stats['num_positive_pixels'],
-            'Coverage (%)': f"{stats['coverage_percent']:.2f}",
-            'Total Pixels': stats['total_pixels']
+            'Positive Pixels': stats.get('num_positive_pixels', 0),
+            'Coverage (%)': f"{stats.get('coverage_percent', 0):.2f}",
+            'Total Pixels': stats.get('total_pixels', 0)
         }
         
         # Add instance info if available
