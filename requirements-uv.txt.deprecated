@@ -1,3 +1,16 @@
+# ⚠️ DEPRECATED - DO NOT USE
+# 
+# This file does NOT work due to dependency conflicts:
+# - Designed for Python 3.11 with uv package manager
+# - Requires micro-sam v1.7.1 which has hard import of python-elf
+# - python-elf cannot be installed in Python 3.10+ due to numba/llvmlite constraints
+#
+# USE INSTEAD: requirements-py39.txt with Python 3.9 and conda
+# See setup.sh for complete installation instructions
+#
+# This file is kept for historical reference only.
+# ============================================================
+
 # Web
 streamlit>=1.28.0
 

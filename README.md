@@ -1,5 +1,8 @@
 # XHistoSegMicroSAM
 
+> **⚠️ Python Version Requirement**: This application ONLY works with **Python 3.9**. 
+> Python 3.10+ is not supported due to dependency conflicts between micro-sam and python-elf.
+
 Histopathology instance segmentation using micro-sam with Streamlit interface.
 
 ## Key Features
@@ -12,167 +15,241 @@ Histopathology instance segmentation using micro-sam with Streamlit interface.
 
 ## Installation
 
-### Standard Installation (pip)
+### Prerequisites
 
-```bash
-# Create environment
-python3 -m venv venv
-source venv/bin/activate
+- **Python 3.9** (REQUIRED - other versions will not work)
+- **Conda** (Miniconda or Anaconda) for managing the environment
+- **Git** for cloning the repository
 
-# Install dependencies
-pip install -r requirements.txt
-
-# For macOS with Homebrew
-brew install openslide
-```
-
-### Install with uv (Recommended)
-
-[uv](https://github.com/astral-sh/uv) is a fast Python package installer and resolver. To install with uv:
+### Automated Setup (Recommended)
 
 ```bash
 # Clone the repository
 git clone https://github.com/eisascience/XHistoSegMicroSAM.git
 cd XHistoSegMicroSAM
 
-# Install Python 3.11 via uv
-uv python install 3.11
-
-# Create virtual environment
-uv venv --python 3.11
-
-# Activate the environment
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-uv pip install -r requirements-uv.txt
-
-# Verify micro-sam and segment-anything installation
-python -c "import micro_sam; import segment_anything; print('OK')"
-
-# Optional: Set MicroSAM cache directory
-export MICROSAM_CACHEDIR="$PWD/.cache/microsam"
+# Run the setup script
+./setup.sh
 ```
 
-**Note about link-mode warning**: During installation, you may see a warning:
-```
-Failed to clone files; falling back to full copy
-```
-This is not an error and installation will proceed normally. If you prefer to suppress this warning, you can set:
+The setup script will:
+1. Create a conda environment with Python 3.9
+2. Install system dependencies (python-elf, vigra, nifty)
+3. Install all Python packages
+4. Install torch-em and micro-sam v1.3.0
+5. Verify the installation
+
+### Manual Installation
+
+If you prefer to install manually or the script doesn't work on your system:
+
 ```bash
-export UV_LINK_MODE=copy
+# 1. Create conda environment
+conda create -n xhisto python=3.9 -y
+conda activate xhisto
+
+# 2. Install conda packages (REQUIRED - not available via pip)
+conda install -c conda-forge python-elf vigra nifty -y
+
+# 3. Install Python packages
+pip install -r requirements-py39.txt
+
+# 4. Install torch-em (required dependency of micro-sam)
+pip install git+https://github.com/constantinpape/torch-em.git
+
+# 5. Install micro-sam v1.3.0 (last version with Python 3.9 support)
+pip install git+https://github.com/computational-cell-analytics/micro-sam.git@v1.3.0
+
+# 6. Verify installation
+python -c "from xhalo.ml import MicroSAMPredictor; print('Installation successful!')"
 ```
-or use `--link-mode=copy` when running uv commands.
+
+### Why Python 3.9?
+
+There is an impossible dependency conflict with Python 3.10+:
+
+- `micro-sam` v1.7.1+ requires Python >=3.10 and has hard imports of `python-elf`
+- `python-elf` requires `numba` which requires `llvmlite`
+- `llvmlite` for Python <3.10 only supports Python <3.10
+- `llvmlite` for Python 3.10+ is incompatible with the `numba` version that `python-elf` needs
+
+**Solution**: Python 3.9 with `micro-sam` v1.3.0 (last version supporting Python 3.9 with histopathology models)
+
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for detailed explanation and common issues.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure:
+Copy `.env.example` to `.env` and configure settings:
 
 ```bash
-# For local mode (no Halo needed)
-LOCAL_MODE=true
+cp .env.example .env
+```
 
-# MicroSAM settings
-MICROSAM_MODEL_TYPE=vit_b_histopathology
-ENABLE_TILING=true
-TILE_SHAPE=1024,1024
-HALO_SIZE=256,256
+### Essential Settings
 
-# Optional: embeddings cache
+```bash
+# Operating Mode
+LOCAL_MODE=true  # Set to true for standalone operation (no Halo needed)
+
+# MicroSAM Model Configuration
+MICROSAM_MODEL_TYPE=vit_b_histopathology  # Options: vit_b_histopathology, vit_l_histopathology
+ENABLE_TILING=true  # Recommended for large images
+TILE_SHAPE=1024,1024  # Tile size for processing
+HALO_SIZE=256,256  # Overlap between tiles
+
+# Optional: Embeddings Cache (speeds up re-processing)
 ENABLE_EMBEDDINGS_CACHE=false
 EMBEDDINGS_CACHE_DIR=./cache/embeddings
 
-# Optional: model cache location
-MICROSAM_CACHEDIR=/path/to/cache
+# Optional: Model Cache Location
+MICROSAM_CACHEDIR=/path/to/cache  # Default: ~/.cache/micro_sam/models
 ```
+
+### Model Options
+
+- **vit_b_histopathology** (default): Faster, suitable for most histology images
+- **vit_l_histopathology**: More accurate but slower, for challenging cases
 
 ## Usage
 
+### Starting the Application
+
 ```bash
-# Start application
+# Activate the conda environment
+conda activate xhisto
+
+# Start Streamlit application
 streamlit run app.py
 ```
 
+The application will open in your default web browser at `http://localhost:8501`.
+
 ### Segmentation Modes
 
-#### Prompt-Based Modes (Python 3.11 Compatible)
+The application supports multiple segmentation modes:
 
-The application supports several prompt-based segmentation modes that work without `python-elf`:
+#### Automatic Instance Segmentation (Recommended)
 
-1. **auto_box**: Automatically detects tissue region using thresholding and morphological operations
-2. **auto_box_from_threshold**: *(Recommended for nuclei/cell segmentation)*
+These modes work with Python 3.9 + micro-sam v1.3.0 and provide full automatic segmentation:
+
+1. **APG (Automatic Polygon Generation)**: Fully automatic instance segmentation
+2. **AIS (Automatic Instance Segmentation)**: Alternative automatic method
+3. **AMG (Automatic Mask Generation)**: Generates masks for all objects
+
+#### Prompt-Based Modes
+
+For more control or specific regions:
+
+1. **auto_box**: Automatically detects tissue region using thresholding
+2. **auto_box_from_threshold**: 
    - Generates bounding boxes from a thresholded channel (e.g., DAPI)
    - Supports Otsu or manual thresholding
    - Filters boxes by area (min/max size)
-   - Optional dilation to capture full nuclei
-   - Returns instance segmentation with unique IDs per nucleus
+   - Excellent for nuclei/cell segmentation
 3. **full_box**: Uses the entire image as the prompt box
 4. **point**: Uses point prompts (center point or user-specified)
 
-#### Automatic Instance Segmentation (Requires conda environment)
+### Workflow: Local Mode
 
-Full automatic segmentation modes (APG/AIS) require `python-elf`, which is **not available in Python 3.11** due to numba/llvmlite constraints.
+1. **Select Mode**: Choose "Local Mode" in the sidebar
+2. **Upload Image**: Upload your histopathology image (PNG/JPG/TIFF/SVS)
+3. **Configure Processing**:
+   - Select channels for processing
+   - Choose segmentation mode (automatic or prompt-based)
+   - Adjust parameters (threshold, box filtering, etc.)
+4. **Run Segmentation**: Click "Run Segmentation"
+5. **Review Results**: View overlays and instance masks
+6. **Download**: Export results as GeoJSON, PNG masks, or visualizations
 
-**To use automatic modes:**
+### Workflow: Halo Mode
 
-```bash
-# Create conda environment with Python 3.9
-conda create -n microsam-auto python=3.9
-conda activate microsam-auto
-
-# Install python-elf from conda-forge
-conda install -c conda-forge python-elf
-
-# Install other dependencies
-pip install -r requirements.txt
-```
-
-For most use cases (especially nuclei/cell segmentation), the **auto_box_from_threshold** mode provides excellent results without requiring `python-elf`.
-
-### Local Mode
-1. Select "Local Mode" in sidebar
-2. Upload image (PNG/JPG/TIFF)
-3. Configure channel preprocessing if needed
-4. Choose prompt mode (auto_box_from_threshold recommended for nuclei)
-5. Adjust threshold and box filtering parameters
-6. Run segmentation
-7. Download results
-
-### Halo Mode
-Configure Halo credentials in `.env` then connect through the UI.
+1. **Configure Credentials**: Set up Halo API credentials in `.env`
+2. **Connect**: Use the Halo connection interface in the sidebar
+3. **Select Image**: Choose image from your Halo database
+4. **Process**: Same segmentation workflow as Local Mode
+5. **Upload Results**: Optionally upload annotations back to Halo
 
 ## Test Script
 
+Test the installation with the provided test script:
+
 ```bash
+# Activate environment
+conda activate xhisto
+
 # Run test with synthetic image
 python scripts/01_microsam_auto_test.py
 
-# Or with your image
+# Or test with your own image
 python scripts/01_microsam_auto_test.py path/to/image.png
 ```
 
-Output saved to `test_output/` directory.
+Output will be saved to the `test_output/` directory.
 
 ## Models
 
-MicroSAM models download automatically on first use:
-- `vit_b_histopathology` (default, faster)
-- `vit_l_histopathology` (larger, more accurate)
+MicroSAM models are downloaded automatically on first use:
+
+- **vit_b_histopathology** (default): Faster, ~300 MB
+- **vit_l_histopathology**: More accurate, ~400 MB
+
+Models are cached in `~/.cache/micro_sam/models` (or `$MICROSAM_CACHEDIR` if set).
 
 ## Output Formats
 
-- Instance masks: 16-bit PNG with integer IDs
-- Visualizations: Color overlays
-- GeoJSON: Polygon features with instance_id property
+The application generates multiple output formats:
 
-## Requirements
+- **Instance Masks**: 16-bit PNG with unique integer IDs per object
+- **Visualizations**: Color overlays showing segmentation results
+- **GeoJSON**: Polygon features compatible with Halo (includes instance_id property)
+- **Statistics**: CSV with object counts and measurements
 
-- Python 3.8+ (Python 3.11 recommended for uv installation)
+## System Requirements
+
+### Python Environment
+- **Python 3.9** (REQUIRED)
+- Conda (Miniconda or Anaconda)
+
+### Hardware Requirements
+- **Minimum**: 8 GB RAM, 2 GB disk space
+- **Recommended**: 16 GB RAM, GPU with 4+ GB VRAM
+- **GPU Support**: CUDA (NVIDIA), ROCm (AMD), or MPS (Apple Silicon)
+
+### Dependencies
 - PyTorch 2.6.0
-- micro-sam >= 1.0.0
-- See requirements.txt or requirements-uv.txt for full list
+- micro-sam v1.3.0
+- python-elf (conda only)
+- vigra (conda only)
+- nifty (conda only)
+- torch-em (GitHub install)
+- See `requirements-py39.txt` for complete list
 
-**Note:** `python-elf` is NOT required for prompt-based segmentation modes. It is only needed for full automatic instance segmentation (APG/AIS modes) and requires Python <3.10 in a conda environment.
+### Operating Systems
+- Linux (tested on Ubuntu 20.04+)
+- macOS (tested on macOS 12+)
+- Windows (with WSL2 recommended)
+
+## Troubleshooting
+
+Common issues and solutions are documented in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+Quick checks:
+
+```bash
+# Verify Python version
+python --version  # Should show 3.9.x
+
+# Verify key dependencies
+conda list | grep -E "elf|vigra|nifty"
+pip show micro-sam torch
+
+# Test import
+python -c "from xhalo.ml import MicroSAMPredictor; print('OK')"
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution guidelines.
 
 ## License
 
