@@ -61,7 +61,15 @@ class MicroSAMPredictor:
         self.device = device
         
         # Get batch size from environment or use default
-        self.batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+        try:
+            batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+            if batch_size < 1 or batch_size > 32:
+                logger.warning(f"MICROSAM_BATCH_SIZE={batch_size} is outside recommended range [1-32]. Using default 8.")
+                batch_size = 8
+            self.batch_size = batch_size
+        except (ValueError, TypeError):
+            logger.warning("Invalid MICROSAM_BATCH_SIZE value. Using default 8.")
+            self.batch_size = 8
         logger.info(f"Using batch_size={self.batch_size}")
         
         # Initialize base MicroSAM predictor

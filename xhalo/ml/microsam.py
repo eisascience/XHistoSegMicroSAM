@@ -77,8 +77,16 @@ class MicroSAMPredictor:
         self.tile_shape = tile_shape
         self.halo = halo
         
-        # Get batch size from environment or use default
-        self.batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+        # Get batch size from environment or use default with validation
+        try:
+            batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+            if batch_size < 1 or batch_size > 32:
+                logger.warning(f"MICROSAM_BATCH_SIZE={batch_size} is outside recommended range [1-32]. Using default 8.")
+                batch_size = 8
+            self.batch_size = batch_size
+        except (ValueError, TypeError):
+            logger.warning("Invalid MICROSAM_BATCH_SIZE value. Using default 8.")
+            self.batch_size = 8
         
         logger.info(f"Initializing MicroSAM with model={model_type}, device={self.device}, batch_size={self.batch_size}")
         
