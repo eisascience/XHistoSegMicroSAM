@@ -1,0 +1,177 @@
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     PIPELINE FRAMEWORK ARCHITECTURE                          ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          USER INTERFACE (Streamlit)                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌────────────────────────────────────────────────────────────────────┐   │
+│   │                      MicroSAM Analysis Tab                         │   │
+│   │                                                                    │   │
+│   │   ┌──────────────┐  ┌──────────────┐                             │   │
+│   │   │   ● Classic  │  │  ○ Pipeline  │  Mode Selection Radio       │   │
+│   │   └──────────────┘  └──────────────┘                             │   │
+│   │                                                                    │   │
+│   │   ┌────────────────────────────────────────────────────────┐     │   │
+│   │   │  analysis_page()  [Router Function]                    │     │   │
+│   │   │                                                         │     │   │
+│   │   │  if pipeline_mode:                                     │     │   │
+│   │   │      pipeline_analysis_page()  ────────────────┐       │     │   │
+│   │   │  else:                                         │       │     │   │
+│   │   │      classic_analysis_page()                   │       │     │   │
+│   │   └────────────────────────────────────────────────┼───────┘     │   │
+│   └────────────────────────────────────────────────────┼─────────────┘   │
+│                                                         │                 │
+└─────────────────────────────────────────────────────────┼─────────────────┘
+                                                          │
+                                                          ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         PIPELINE MODE INTERFACE                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. Pipeline Selection                                                       │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  list_pipelines() → Available pipelines with metadata         │     │
+│     │  User selects: 'basic' or 'multi_channel'                     │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  2. Pipeline Instantiation                                                   │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  pipeline = get_pipeline(selected_name)                        │     │
+│     │  Returns: BasePipeline subclass instance                      │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  3. Configuration                                                            │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  config = pipeline.configure_ui(st)                            │     │
+│     │  Renders: Pipeline-specific Streamlit controls                │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  4. Validation                                                               │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  valid = pipeline.validate_channels(available_channels)        │     │
+│     │  Checks: Required channels present                            │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  5. Execution                                                                │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  results = pipeline.process(image, channels, predictor, config)│     │
+│     │  Returns: Dict with masks, measurements, etc.                 │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  6. Visualization                                                            │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  pipeline.visualize(results, st)                               │     │
+│     │  Displays: Pipeline-specific plots and metrics                │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  7. Export                                                                   │
+│     ┌────────────────────────────────────────────────────────────────┐     │
+│     │  exports = pipeline.export_data(results)                       │     │
+│     │  Returns: Dict with CSV, masks, metadata                      │     │
+│     └────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         PIPELINE REGISTRY SYSTEM                             │
+│                         (pipelines/__init__.py)                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  AVAILABLE_PIPELINES = {                                                     │
+│      'basic': BasicSingleChannelPipeline,                                    │
+│      'multi_channel': MultiChannelHierarchicalPipeline                       │
+│  }                                                                           │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │  get_pipeline(name: str) → BasePipeline                           │    │
+│  │    Returns instance of requested pipeline                         │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │  list_pipelines() → Dict[str, Dict]                               │    │
+│  │    Returns metadata for all available pipelines                   │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                    │                                │
+        ┌───────────┴────────┐          ┌───────────┴────────────┐
+        ▼                    ▼          ▼                        ▼
+┌─────────────────┐  ┌─────────────────────┐  ┌──────────────────────────────┐
+│  BasePipeline   │  │  BasePipeline       │  │  BasePipeline                │
+│  (Abstract)     │  │  (Abstract)         │  │  (Abstract)                  │
+│                 │  │                     │  │                              │
+│  Required:      │  │  Required:          │  │  Required:                   │
+│  - configure_ui │  │  - configure_ui     │  │  - configure_ui              │
+│  - validate_ch. │  │  - validate_ch.     │  │  - validate_ch.              │
+│  - process      │  │  - process          │  │  - process                   │
+│  - visualize    │  │  - visualize        │  │  - visualize                 │
+│  - export_data  │  │  - export_data      │  │  - export_data               │
+│  - get_info     │  │  - get_info         │  │  - get_info                  │
+└────────┬────────┘  └──────────┬──────────┘  └──────────────┬───────────────┘
+         │                      │                             │
+         ▼                      ▼                             ▼
+┌─────────────────┐  ┌─────────────────────┐  ┌──────────────────────────────┐
+│ Basic Single    │  │ Multi-Channel       │  │ Future Pipelines             │
+│ Channel         │  │ Hierarchical        │  │ (Infected Macrophages,       │
+│                 │  │                     │  │  Phagocytosis, etc.)         │
+│ • Any image     │  │ • Nucleus detection │  │                              │
+│ • All prompts   │  │ • Cell segmentation │  │ Add by:                      │
+│ • Statistics    │  │ • Compartmental     │  │ 1. Create new .py file       │
+│ • Overlay viz   │  │   analysis          │  │ 2. Inherit BasePipeline      │
+│                 │  │ • N/C ratios        │  │ 3. Implement methods         │
+│                 │  │                     │  │ 4. Register in __init__.py   │
+└─────────────────┘  └─────────────────────┘  └──────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           SHARED RESOURCES                                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │  MicroSAMPredictor (st.session_state.predictor)                    │    │
+│  │    • Shared across Classic and Pipeline modes                      │    │
+│  │    • Initialized once, reused by all pipelines                     │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │  Image Queue (st.session_state.images)                             │    │
+│  │    • Uploaded images available to both modes                       │    │
+│  │    • Each item has: bytes, name, processed_input, result           │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+KEY DESIGN PRINCIPLES:
+
+1. SEPARATION OF CONCERNS
+   • Classic mode = existing functionality (untouched)
+   • Pipeline mode = new modular system
+   • Clear toggle, no confusion
+
+2. EXTENSIBILITY
+   • New pipelines = new files
+   • No core code changes needed
+   • Register in one place (__init__.py)
+
+3. ABSTRACTION
+   • BasePipeline enforces interface
+   • All pipelines implement same methods
+   • Consistent user experience
+
+4. REUSABILITY
+   • Shared predictor across modes
+   • Shared image queue
+   • Common utilities available
+
+5. DOCUMENTATION
+   • Each pipeline self-documents
+   • Developer guide with examples
+   • UI documentation with mockups
+
+═══════════════════════════════════════════════════════════════════════════════
+

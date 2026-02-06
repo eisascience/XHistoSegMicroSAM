@@ -38,6 +38,9 @@ import json
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 
+# Import pipeline framework
+from pipelines import get_pipeline, list_pipelines
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -139,6 +142,11 @@ def init_session_state():
         st.session_state.batch_running = False
     if 'batch_index' not in st.session_state:
         st.session_state.batch_index = 0
+    # Pipeline framework support
+    if 'pipeline_mode' not in st.session_state:
+        st.session_state.pipeline_mode = False  # Toggle between classic and pipeline mode
+    if 'pipeline_results' not in st.session_state:
+        st.session_state.pipeline_results = None
 
 init_session_state()
 
@@ -1288,10 +1296,241 @@ def channels_page():
     st.info("Go to **MicroSAM Analysis** tab to process your configured images")
 
 
+def pipeline_analysis_page():
+    """Pipeline-based analysis interface with modular workflows"""
+    
+    # Check if we're in local mode and have images in queue
+    is_local_mode = st.session_state.local_mode
+    
+    if is_local_mode:
+        if not st.session_state.images:
+            st.warning("Please upload images first in the Image Upload tab")
+            return
+    else:
+        st.warning("Pipeline mode currently only supports local mode. Please switch to local mode.")
+        return
+    
+    st.subheader("Pipeline Selection")
+    
+    # Get available pipelines
+    pipeline_infos = list_pipelines()
+    pipeline_names = list(pipeline_infos.keys())
+    pipeline_labels = [pipeline_infos[name]['name'] for name in pipeline_names]
+    
+    # Pipeline selection
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        selected_pipeline_idx = st.selectbox(
+            "Select Analysis Pipeline",
+            range(len(pipeline_labels)),
+            format_func=lambda i: pipeline_labels[i],
+            help="Choose the analysis workflow for your data"
+        )
+    
+    with col2:
+        # Show pipeline info
+        selected_pipeline_name = pipeline_names[selected_pipeline_idx]
+        info = pipeline_infos[selected_pipeline_name]
+        
+        st.markdown(f"**Description:** {info['description']}")
+        st.markdown(f"**Version:** {info['version']}")
+        if info['author']:
+            st.markdown(f"**Author:** {info['author']}")
+    
+    # Get pipeline instance
+    pipeline = get_pipeline(selected_pipeline_name)
+    
+    # Show detailed info in expander
+    with st.expander("Pipeline Details"):
+        if info['required_channels']:
+            st.write(f"**Required Channels:** {', '.join(info['required_channels'])}")
+        else:
+            st.write("**Required Channels:** None (works with any image)")
+        if info['optional_channels']:
+            st.write(f"**Optional Channels:** {', '.join(info['optional_channels'])}")
+    
+    st.markdown("---")
+    
+    # Pipeline-specific configuration UI
+    st.subheader("Pipeline Configuration")
+    config = pipeline.configure_ui(st)
+    
+    st.markdown("---")
+    
+    # Image selection for pipeline processing
+    st.subheader("Image Selection")
+    
+    # Show images and let user select one to process
+    image_names = [img['name'] for img in st.session_state.images if img.get('include', True)]
+    
+    if not image_names:
+        st.warning("No images available. Please include at least one image.")
+        return
+    
+    selected_image_name = st.selectbox(
+        "Select image to process",
+        image_names,
+        help="Choose an image from your queue"
+    )
+    
+    # Find the selected image item
+    selected_item = None
+    for item in st.session_state.images:
+        if item['name'] == selected_image_name:
+            selected_item = item
+            break
+    
+    # Run button
+    col_btn1, col_btn2 = st.columns(2)
+    
+    with col_btn1:
+        run_pipeline = st.button("Run Pipeline", type="primary", use_container_width=True)
+    
+    with col_btn2:
+        clear_results = st.button("Clear Results", use_container_width=True)
+    
+    if clear_results:
+        st.session_state.pipeline_results = None
+        st.rerun()
+    
+    if run_pipeline and selected_item:
+        with st.spinner(f"Running {pipeline.name} pipeline..."):
+            try:
+                # Initialize predictor if needed
+                if st.session_state.predictor is None:
+                    st.session_state.predictor = UtilsMicroSAMPredictor(
+                        model_type=Config.MICROSAM_MODEL_TYPE,
+                        device=Config.DEVICE,
+                        segmentation_mode="interactive",
+                        tile_shape=Config.TILE_SHAPE,
+                        halo=Config.HALO_SIZE
+                    )
+                
+                # Get image data
+                if 'processed_input' in selected_item and selected_item['processed_input'] is not None:
+                    image = selected_item['processed_input']
+                else:
+                    image = load_image_from_bytes(selected_item['bytes'])
+                
+                # Extract channels from image
+                # For now, create a simple channel dictionary
+                # In a real implementation, this would use the channel configuration
+                channels = {}
+                if image.ndim == 2:
+                    channels['Channel_0'] = image
+                elif image.ndim == 3:
+                    for i in range(min(image.shape[2], 5)):
+                        channels[f'Channel_{i}'] = image[:, :, i]
+                
+                # Validate channels
+                if not pipeline.validate_channels(list(channels.keys())):
+                    st.error(f"Image does not meet pipeline requirements. Required channels: {pipeline.required_channels}")
+                else:
+                    # Run pipeline
+                    results = pipeline.process(image, channels, st.session_state.predictor, config)
+                    
+                    # Store results
+                    st.session_state.pipeline_results = {
+                        'pipeline_name': selected_pipeline_name,
+                        'image_name': selected_image_name,
+                        'results': results,
+                        'config': config
+                    }
+                    
+                    st.success(f"Pipeline completed successfully!")
+                
+            except Exception as e:
+                st.error(f"Pipeline failed: {str(e)}")
+                import traceback
+                with st.expander("Error Details"):
+                    st.code(traceback.format_exc())
+    
+    # Display results
+    if st.session_state.pipeline_results:
+        st.markdown("---")
+        st.subheader("Pipeline Results")
+        
+        # Show which pipeline and image was used
+        st.info(f"**Pipeline:** {st.session_state.pipeline_results['pipeline_name']} | "
+                f"**Image:** {st.session_state.pipeline_results['image_name']}")
+        
+        # Get the pipeline instance to use its visualization method
+        result_pipeline_name = st.session_state.pipeline_results['pipeline_name']
+        result_pipeline = get_pipeline(result_pipeline_name)
+        
+        # Visualize results using pipeline's method
+        result_pipeline.visualize(st.session_state.pipeline_results['results'], st)
+        
+        st.markdown("---")
+        
+        # Export button
+        if st.button("Export Pipeline Results", type="secondary"):
+            try:
+                exports = result_pipeline.export_data(st.session_state.pipeline_results['results'])
+                
+                st.subheader("Export Data")
+                
+                # Handle different export types
+                for export_name, export_data in exports.items():
+                    if 'csv' in export_name.lower() and hasattr(export_data, 'to_csv'):
+                        # DataFrame export
+                        csv_data = export_data.to_csv(index=False)
+                        st.download_button(
+                            label=f"Download {export_name}",
+                            data=csv_data,
+                            file_name=f"{export_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
+                    elif isinstance(export_data, np.ndarray):
+                        # Mask export
+                        st.write(f"**{export_name}:** Shape {export_data.shape}, dtype {export_data.dtype}")
+                    elif isinstance(export_data, dict):
+                        # Dictionary export
+                        st.json(export_data)
+                
+                st.success("Export data prepared!")
+                
+            except Exception as e:
+                st.error(f"Export failed: {str(e)}")
+
+
 def analysis_page():
     """MicroSAM Analysis interface with segmentation - Multi-image queue support"""
     st.title("MicroSAM Analysis")
     
+    # Add mode toggle between Classic and Pipeline modes
+    st.markdown("### Analysis Mode")
+    mode_col1, mode_col2 = st.columns([1, 3])
+    
+    with mode_col1:
+        analysis_mode = st.radio(
+            "Select Mode",
+            ["Classic", "Pipeline"],
+            index=0 if not st.session_state.pipeline_mode else 1,
+            help="Classic: Traditional single/multi-channel analysis\nPipeline: Advanced modular workflows"
+        )
+        
+        # Update session state
+        st.session_state.pipeline_mode = (analysis_mode == "Pipeline")
+    
+    with mode_col2:
+        if analysis_mode == "Classic":
+            st.info("**Classic Mode**: Standard segmentation workflow with post-processing options")
+        else:
+            st.info("**Pipeline Mode**: Modular analysis workflows for specialized biological applications")
+    
+    st.markdown("---")
+    
+    # Route to appropriate analysis interface
+    if st.session_state.pipeline_mode:
+        pipeline_analysis_page()
+    else:
+        classic_analysis_page()
+
+
+def classic_analysis_page():
+    """Classic MicroSAM Analysis interface (original functionality)"""
     # Check if we're in local mode and have images in queue
     is_local_mode = st.session_state.local_mode
     

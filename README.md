@@ -169,6 +169,55 @@ For more control or specific regions:
 4. **Process**: Same segmentation workflow as Local Mode
 5. **Upload Results**: Optionally upload annotations back to Halo
 
+## Pipeline Framework (Advanced)
+
+The application now includes a modular pipeline framework for extensible, biology-specific workflows.
+
+### Analysis Modes
+
+In the **MicroSAM Analysis** tab, you can choose between two modes:
+
+- **Classic Mode**: Traditional single/multi-channel analysis (default behavior)
+- **Pipeline Mode**: Advanced modular workflows for specialized biological applications
+
+### Available Pipelines
+
+1. **Basic Single Channel**: Standard segmentation for any image type (replicates classic mode)
+2. **Multi-Channel Hierarchical**: Nucleus-guided cell segmentation with compartmental analysis
+
+### Using Pipeline Mode
+
+1. **Select Pipeline Mode** in the MicroSAM Analysis tab
+2. **Choose a Pipeline** from the dropdown menu
+3. **Configure Pipeline Parameters** using the pipeline-specific UI
+4. **Select an Image** from your queue
+5. **Run Pipeline** and view results
+6. **Export Results** in pipeline-specific formats
+
+### Creating Custom Pipelines
+
+You can create your own analysis pipelines for specialized workflows:
+
+1. Create a new file in `pipelines/` directory
+2. Inherit from `BasePipeline` class
+3. Implement required methods:
+   - `configure_ui()` - Define Streamlit UI controls
+   - `validate_channels()` - Check channel requirements
+   - `process()` - Implement analysis logic
+   - `visualize()` - Display results
+   - `export_data()` - Export in desired formats
+4. Register your pipeline in `pipelines/__init__.py`
+
+See `pipelines/README.md` for a complete pipeline development guide with examples.
+
+### Pipeline Benefits
+
+- ✅ **Generalizable**: Core app works for any images
+- ✅ **Extensible**: Add new pipelines without modifying core code
+- ✅ **Maintainable**: Each pipeline is self-contained
+- ✅ **Shareable**: Pipelines are standalone Python files
+- ✅ **Documented**: Pipeline development guide included
+
 ## Test Script
 
 Test the installation with the provided test script:
