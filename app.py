@@ -145,8 +145,8 @@ init_session_state()
 
 def authentication_page():
     """Authentication and configuration page"""
-    st.markdown('<h1 class="main-header">XHaloPathAnalyzer</h1>', unsafe_allow_html=True)
-    st.markdown("### Web-Based GUI for Halo Digital Pathology Analysis")
+    st.markdown('<h1 class="main-header">XHistoSegMicroSAM</h1>', unsafe_allow_html=True)
+    st.markdown("### Web-Based GUI for Histopathology MicroSAM Analysis")
     
     st.markdown("---")
     
@@ -176,7 +176,7 @@ def authentication_page():
             st.write("Upload single or multiple images for analysis")
         with col2:
             st.markdown("**AI Analysis**")
-            st.write("Run MedSAM segmentation on uploaded images")
+            st.write("Run MicroSAM segmentation on uploaded images")
         with col3:
             st.markdown("**Export Results**")
             st.write("Download segmentation masks and GeoJSON")
@@ -245,7 +245,7 @@ def authentication_page():
             st.write("Browse and select slides from your Halo instance")
         with col2:
             st.markdown("**AI Analysis**")
-            st.write("Run MedSAM segmentation on regions of interest")
+            st.write("Run MicroSAM segmentation on regions of interest")
         with col3:
             st.markdown("**Export Results**")
             st.write("Generate GeoJSON annotations for Halo import")
@@ -337,7 +337,7 @@ def slide_selection_page():
 
 def prepare_channel_input(image: np.ndarray, channel_config: Dict[str, Any]) -> List[Tuple[np.ndarray, str]]:
     """
-    Prepare channel input(s) for MedSAM based on channel configuration.
+    Prepare channel input(s) for MicroSAM based on channel configuration.
     
     Args:
         image: RGB uint8 image (H, W, 3)
@@ -532,7 +532,7 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
     """Run analysis on a single image item with channel and post-processing support.
     
     Args:
-        item: Image item dict with 'bytes' field containing raw image data
+        item: Image item dict with 'bytes' or 'processed_input' field
         prompt_mode: Segmentation prompt mode (auto_box, full_box, point)
         multimask_output: Whether to generate multiple mask predictions
         min_area_ratio: Minimum area ratio for tissue detection (0-1)
@@ -564,9 +564,52 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
         >>> result = run_analysis_on_item(item, prompt_mode='auto_box')
         >>> print(result['statistics']['coverage_percent'])
     """
-    # Decode bytes to RGB uint8 numpy
-    image = load_image_from_bytes(item['bytes'])
-    item['np_rgb_uint8'] = image  # Store for future use
+    # Check if we have processed input from channels page
+    if 'processed_input' in item and item['processed_input'] is not None:
+        # Use the preprocessed input from channels page
+        model_input = item['processed_input']
+        logger.info(f"Using preprocessed input from channels page: {model_input.shape}")
+    else:
+        # Fallback to old method for backward compatibility
+        image = load_image_from_bytes(item['bytes'])
+        item['np_rgb_uint8'] = image
+        
+        # Get channel configuration (old method)
+        channel_config = item.get('channel_config', {'mode': 'rgb', 'channels': ['R', 'G', 'B']})
+        channel_inputs = prepare_channel_input(image, channel_config)
+        
+        # For simplicity, just use the first channel input
+        if channel_inputs:
+            model_input, _ = channel_inputs[0]
+        else:
+            model_input = image
+    
+    # Get original image for overlay (from img_info if available)
+    if 'img_info' in item and item['img_info'] is not None:
+        img_info = item['img_info']
+        if img_info['kind'] == 'rgb':
+            original_image = img_info['rgb']
+        elif img_info['kind'] == 'grayscale':
+            # Convert grayscale to RGB for display
+            gray = img_info['grayscale']
+            if gray.dtype != np.uint8:
+                from utils.image_io import normalize_to_uint8
+                gray = normalize_to_uint8(gray)
+            original_image = np.stack([gray, gray, gray], axis=2)
+        elif img_info['kind'] == 'multichannel':
+            # Use first channel converted to RGB
+            from utils.image_io import normalize_to_uint8
+            ch0 = normalize_to_uint8(img_info['channels'][0])
+            original_image = np.stack([ch0, ch0, ch0], axis=2)
+        else:
+            original_image = model_input
+    else:
+        # Fallback
+        if 'np_rgb_uint8' in item and item['np_rgb_uint8'] is not None:
+            original_image = item['np_rgb_uint8']
+        else:
+            original_image = load_image_from_bytes(item['bytes'])
+            item['np_rgb_uint8'] = original_image
     
     # Initialize predictor if needed
     if st.session_state.predictor is None:
@@ -578,48 +621,25 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
             halo=Config.HALO_SIZE
         )
     
-    # Get channel configuration
-    channel_config = item.get('channel_config', {'mode': 'rgb', 'channels': ['R', 'G', 'B']})
-    
-    # Prepare channel inputs
-    channel_inputs = prepare_channel_input(image, channel_config)
-    
-    # Run segmentation on each channel
-    channel_masks = {}
+    # Compute prompt box for visualization
     prompt_box = None
-    img_with_box = None
+    if prompt_mode == "auto_box":
+        image_rgb = _ensure_rgb_uint8(model_input)
+        prompt_box = _compute_tissue_bbox(image_rgb, min_area_ratio, morph_kernel_size)
+    elif prompt_mode == "full_box":
+        h, w = model_input.shape[:2]
+        prompt_box = np.array([0, 0, w - 1, h - 1])
     
-    for channel_image, channel_name in channel_inputs:
-        # Compute prompt box for visualization (only for first channel)
-        if prompt_box is None:
-            if prompt_mode == "auto_box":
-                image_rgb = _ensure_rgb_uint8(channel_image)
-                prompt_box = _compute_tissue_bbox(image_rgb, min_area_ratio, morph_kernel_size)
-            elif prompt_mode == "full_box":
-                h, w = channel_image.shape[:2]
-                prompt_box = np.array([0, 0, w - 1, h - 1])
-        
-        # Run segmentation
-        channel_mask = st.session_state.predictor.predict(
-            channel_image,
-            prompt_mode=prompt_mode,
-            multimask_output=multimask_output,
-            min_area_ratio=min_area_ratio,
-            morph_kernel_size=morph_kernel_size
-        )
-        
-        channel_masks[channel_name] = channel_mask
+    # Run segmentation on the processed input
+    mask = st.session_state.predictor.predict(
+        model_input,
+        prompt_mode=prompt_mode,
+        multimask_output=multimask_output,
+        min_area_ratio=min_area_ratio,
+        morph_kernel_size=morph_kernel_size
+    )
     
-    # Merge masks if multi-channel
-    if len(channel_masks) > 1:
-        merge_mode = merge_config.get('mode', 'union') if merge_config else 'union'
-        k_value = merge_config.get('k_value', 1) if merge_config else 1
-        mask = merge_channel_masks(channel_masks, merge_mode, k_value)
-        mask_merged = mask
-    else:
-        # Single channel or RGB mode
-        mask = list(channel_masks.values())[0]
-        mask_merged = None
+    channel_masks = {'processed': mask}  # Single processed channel
     
     # Apply post-processing if requested
     binary_mask = mask
@@ -643,17 +663,18 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
     # Compute statistics on final mask
     stats = compute_mask_statistics(binary_mask, mpp=None)
     
-    # Create overlay visualization using final mask
+    # Create overlay visualization using final mask on original image
     overlay = overlay_mask_on_image(
-        image,
+        original_image,
         binary_mask,
         color=(255, 0, 0),
         alpha=0.5
     )
     
     # Create prompt box visualization if available
+    img_with_box = None
     if prompt_box is not None:
-        img_with_box = image.copy()
+        img_with_box = original_image.copy()
         x1, y1, x2, y2 = prompt_box.astype(int)
         img_with_box = cv2.rectangle(img_with_box, (x1, y1), (x2, y2), 
                                     PROMPT_BOX_COLOR, PROMPT_BOX_THICKNESS)
@@ -664,10 +685,10 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
     
     # Build and return result dict
     result = {
-        'image': image,
-        'mask': mask,  # Original mask before post-processing
-        'channel_masks': channel_masks if len(channel_masks) > 1 else None,
-        'mask_merged': mask_merged,
+        'image': original_image,
+        'mask': mask,  # Segmentation mask
+        'channel_masks': None,  # No longer using multi-channel masks in new workflow
+        'mask_merged': None,
         'binary_mask': binary_mask,
         'instance_mask': instance_mask,
         'measurements': measurements,
@@ -705,6 +726,9 @@ def image_upload_page():
     if uploaded_files:
         st.success(f" {len(uploaded_files)} file(s) uploaded")
         
+        # Import the new image loader
+        from utils.image_io import load_image_any
+        
         # Automatically populate session_state.images from uploaded files
         # Create unique IDs based on filename and file size
         uploaded_ids = set()
@@ -720,16 +744,28 @@ def image_upload_page():
                 image_bytes = uploaded_file.read()
                 uploaded_file.seek(0)  # Reset file pointer
                 
-                # Add to images list
+                # Load image with new loader to get metadata
+                try:
+                    img_info = load_image_any(uploaded_file)
+                except Exception as e:
+                    logger.error(f"Failed to load {uploaded_file.name}: {e}")
+                    st.error(f"Failed to load {uploaded_file.name}: {str(e)}")
+                    continue
+                
+                # Add to images list with metadata
                 st.session_state.images.append({
                     'id': file_id,
                     'name': uploaded_file.name,
                     'bytes': image_bytes,
-                    'np_rgb_uint8': None,
+                    'img_info': img_info,  # Store image metadata
+                    'np_rgb_uint8': None,  # Kept for backward compatibility
                     'status': 'ready',  # ready, processing, done, failed, skipped
                     'error': None,
                     'result': None,
-                    'include': True  # Whether to include in batch processing
+                    'include': True,  # Whether to include in batch processing
+                    # Channel configuration will be set in channels page
+                    'channel_config': None,
+                    'processed_input': None  # Processed input for MicroSAM
                 })
         
         # Remove images that are no longer in uploaded_files
@@ -747,33 +783,73 @@ def image_upload_page():
             for i, img in enumerate(st.session_state.images):
                 # Preview thumbnail
                 try:
-                    if img['np_rgb_uint8'] is None and img['status'] != 'processing':
-                        preview_img = load_image_from_bytes(img['bytes'])
-                        # Create small thumbnail for preview (100px height)
-                        h, w = preview_img.shape[:2]
-                        thumb_h = 100
-                        thumb_w = int(w * thumb_h / h)
-                        thumbnail = cv2.resize(preview_img, (thumb_w, thumb_h))
-                    else:
-                        thumbnail = img.get('np_rgb_uint8')
-                        if thumbnail is not None:
-                            h, w = thumbnail.shape[:2]
+                    img_info = img.get('img_info')
+                    if img_info:
+                        # Get preview from img_info
+                        if img_info['kind'] == 'rgb':
+                            preview_img = img_info['rgb']
+                        elif img_info['kind'] == 'grayscale':
+                            preview_img = img_info['grayscale']
+                        elif img_info['kind'] == 'multichannel':
+                            # Show first channel for preview
+                            from utils.image_io import normalize_to_uint8
+                            preview_img = normalize_to_uint8(img_info['channels'][0])
+                        else:
+                            preview_img = None
+                        
+                        if preview_img is not None:
+                            # Create small thumbnail for preview (100px height)
+                            h, w = preview_img.shape[:2]
                             thumb_h = 100
                             thumb_w = int(w * thumb_h / h)
-                            thumbnail = cv2.resize(thumbnail, (thumb_w, thumb_h))
+                            thumbnail = cv2.resize(preview_img, (thumb_w, thumb_h))
+                        else:
+                            thumbnail = None
+                    else:
+                        # Fallback to old method
+                        if img['np_rgb_uint8'] is None and img['status'] != 'processing':
+                            preview_img = load_image_from_bytes(img['bytes'])
+                            # Create small thumbnail for preview (100px height)
+                            h, w = preview_img.shape[:2]
+                            thumb_h = 100
+                            thumb_w = int(w * thumb_h / h)
+                            thumbnail = cv2.resize(preview_img, (thumb_w, thumb_h))
+                        else:
+                            thumbnail = img.get('np_rgb_uint8')
+                            if thumbnail is not None:
+                                h, w = thumbnail.shape[:2]
+                                thumb_h = 100
+                                thumb_w = int(w * thumb_h / h)
+                                thumbnail = cv2.resize(thumbnail, (thumb_w, thumb_h))
                 except Exception as e:
                     # Handle image loading/processing errors gracefully
+                    logger.error(f"Error creating thumbnail for {img['name']}: {e}")
                     thumbnail = None
                 
                 # Get dimensions
                 try:
-                    if img['np_rgb_uint8'] is not None:
+                    img_info = img.get('img_info')
+                    if img_info:
+                        shape = img_info['shape_original']
+                        if len(shape) == 2:
+                            dims = f"{shape[1]} × {shape[0]} (gray)"
+                        elif len(shape) == 3:
+                            if img_info['kind'] == 'multichannel':
+                                # shape is (C, H, W)
+                                dims = f"{shape[2]} × {shape[1]} × {shape[0]}ch"
+                            else:
+                                # shape is (H, W, 3) for RGB
+                                dims = f"{shape[1]} × {shape[0]} (RGB)"
+                        else:
+                            dims = str(shape)
+                    elif img['np_rgb_uint8'] is not None:
                         dims = f"{img['np_rgb_uint8'].shape[1]} × {img['np_rgb_uint8'].shape[0]}"
                     else:
                         temp_img = load_image_from_bytes(img['bytes'])
                         dims = f"{temp_img.shape[1]} × {temp_img.shape[0]}"
                 except Exception as e:
                     # Handle image loading errors gracefully
+                    logger.error(f"Error getting dimensions for {img['name']}: {e}")
                     dims = "Unknown"
                 
                 table_data.append({
@@ -830,7 +906,7 @@ def image_upload_page():
                 st.session_state.images = []
                 st.rerun()
         
-        st.info("Go to **MedSAM Analysis** tab to process your images")
+        st.info("Go to **Channels** tab to configure channels, then **MicroSAM Analysis** to process your images")
         
     else:
         st.info("Please upload one or more images to get started")
@@ -841,11 +917,12 @@ def image_upload_page():
 
 
 def channels_page():
-    """Channel inspection and configuration page"""
+    """Channel inspection and configuration page with multi-channel TIFF support"""
     st.title("Channels")
     
     st.markdown("""
-    Preview individual color channels and configure which channels to use for MedSAM analysis.
+    Preview individual color channels and configure which channels to use for MicroSAM analysis.
+    Multi-channel TIFFs are fully supported with per-channel preprocessing.
     """)
     
     # Check if we have images
@@ -853,116 +930,287 @@ def channels_page():
         st.warning("Please upload images first in the Image Upload tab")
         return
     
+    from utils.image_io import normalize_to_uint8, apply_threshold, apply_gaussian_smooth
+    from skimage.filters import threshold_otsu
+    
     st.markdown("---")
     
     # Display channel info for each image
     for i, item in enumerate(st.session_state.images):
         with st.expander(f"{i+1}. {item['name']}", expanded=(i == 0)):
-            # Load image if not already loaded
-            if 'np_rgb_uint8' not in item or item['np_rgb_uint8'] is None:
-                image = load_image_from_bytes(item['bytes'])
-                item['np_rgb_uint8'] = image
-            else:
-                image = item['np_rgb_uint8']
+            img_info = item.get('img_info')
+            
+            if not img_info:
+                st.error("Image metadata not found. Please re-upload the image.")
+                continue
+            
+            # Display image information
+            st.write(f"**Image Type:** {img_info['kind']}")
+            st.write(f"**Shape:** {img_info['shape_original']}")
+            st.write(f"**Data Type:** {img_info['dtype']}")
+            st.write(f"**Value Range:** [{img_info['vmin']:.2f}, {img_info['vmax']:.2f}]")
             
             # Initialize channel config if not present
-            if 'channel_config' not in item:
+            if 'channel_config' not in item or item['channel_config'] is None:
                 item['channel_config'] = {
-                    'mode': 'rgb',
-                    'channels': ['R', 'G', 'B']
+                    'selected_channel': 0,
+                    'use_normalization': True,
+                    'percentile_low': 1.0,
+                    'percentile_high': 99.0,
+                    'threshold_mode': 'off',  # off, manual, otsu
+                    'threshold_value': 128,
+                    'threshold_type': 'binary',  # binary, masked
+                    'smoothing_sigma': 0.0
                 }
             
-            # Channel previews
-            st.write("**Channel Previews**")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            # Extract channels
-            r_channel = image[:, :, 0]
-            g_channel = image[:, :, 1]
-            b_channel = image[:, :, 2]
-            
-            with col1:
-                st.image(image, caption="RGB Composite", use_container_width=True)
-            with col2:
-                st.image(r_channel, caption="R Channel", use_container_width=True, clamp=True)
-            with col3:
-                st.image(g_channel, caption="G Channel", use_container_width=True, clamp=True)
-            with col4:
-                st.image(b_channel, caption="B Channel", use_container_width=True, clamp=True)
+            config = item['channel_config']
             
             st.markdown("---")
             
-            # Channel mode selection
-            st.write("**Channel Configuration**")
+            # Channel Previews Section
+            st.write("**Channel Previews**")
             
-            mode = st.radio(
-                "Channel Mode",
-                options=['rgb', 'single', 'multi'],
-                format_func=lambda x: {
-                    'rgb': 'RGB Composite',
-                    'single': 'Single Channel',
-                    'multi': 'Multi-Channel'
-                }[x],
-                key=f"channel_mode_{i}",
-                index=['rgb', 'single', 'multi'].index(item['channel_config']['mode']),
-                horizontal=True
-            )
-            
-            item['channel_config']['mode'] = mode
-            
-            # Channel selection for single/multi mode
-            if mode in ['single', 'multi']:
-                if mode == 'single':
-                    st.write("Select a single channel:")
-                    selected = st.radio(
-                        "Channel",
-                        options=['R', 'G', 'B'],
-                        key=f"single_channel_{i}",
-                        index=['R', 'G', 'B'].index(item['channel_config']['channels'][0]) if item['channel_config']['channels'] else 0,
+            if img_info['kind'] == 'rgb':
+                # RGB image - show RGB composite and R, G, B channels
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.image(img_info['rgb'], caption="RGB Composite", use_container_width=True)
+                with col2:
+                    st.image(img_info['rgb'][:,:,0], caption="R Channel", use_container_width=True, clamp=True)
+                with col3:
+                    st.image(img_info['rgb'][:,:,1], caption="G Channel", use_container_width=True, clamp=True)
+                with col4:
+                    st.image(img_info['rgb'][:,:,2], caption="B Channel", use_container_width=True, clamp=True)
+                
+                # For RGB, allow selection of single channel or use all
+                st.write("**Channel Selection**")
+                channel_mode = st.radio(
+                    "Mode",
+                    options=['rgb', 'single'],
+                    format_func=lambda x: 'Use RGB Composite' if x == 'rgb' else 'Use Single Channel',
+                    key=f"rgb_mode_{i}",
+                    horizontal=True
+                )
+                
+                if channel_mode == 'single':
+                    config['selected_channel'] = st.radio(
+                        "Select Channel",
+                        options=[0, 1, 2],
+                        format_func=lambda x: ['R', 'G', 'B'][x],
+                        key=f"rgb_ch_sel_{i}",
                         horizontal=True
                     )
-                    item['channel_config']['channels'] = [selected]
-                else:  # multi
-                    st.write("Select channels to process separately (will be merged):")
-                    channels = []
-                    col_r, col_g, col_b = st.columns(3)
-                    with col_r:
-                        if st.checkbox("R", value='R' in item['channel_config']['channels'], key=f"multi_r_{i}"):
-                            channels.append('R')
-                    with col_g:
-                        if st.checkbox("G", value='G' in item['channel_config']['channels'], key=f"multi_g_{i}"):
-                            channels.append('G')
-                    with col_b:
-                        if st.checkbox("B", value='B' in item['channel_config']['channels'], key=f"multi_b_{i}"):
-                            channels.append('B')
-                    
-                    if channels:
-                        item['channel_config']['channels'] = channels
-                    else:
-                        st.warning("Please select at least one channel")
-                        item['channel_config']['channels'] = ['R']
+                else:
+                    config['selected_channel'] = None  # Use RGB
             
-            # Show preview of what will be fed to MedSAM
+            elif img_info['kind'] == 'grayscale':
+                # Grayscale image - just show it
+                st.image(normalize_to_uint8(img_info['grayscale']), 
+                        caption="Grayscale Image", use_container_width=True)
+                config['selected_channel'] = 0
+            
+            elif img_info['kind'] == 'multichannel':
+                # Multi-channel image - show grid of all channels
+                n_channels = img_info['channels'].shape[0]
+                st.write(f"**{n_channels} channels detected**")
+                
+                # Show thumbnails in a grid (up to 4 columns)
+                n_cols = min(4, n_channels)
+                n_rows = (n_channels + n_cols - 1) // n_cols
+                
+                for row in range(n_rows):
+                    cols = st.columns(n_cols)
+                    for col_idx in range(n_cols):
+                        ch_idx = row * n_cols + col_idx
+                        if ch_idx < n_channels:
+                            with cols[col_idx]:
+                                ch_data = img_info['channels'][ch_idx]
+                                ch_preview = normalize_to_uint8(ch_data)
+                                st.image(ch_preview, 
+                                       caption=img_info['channel_names'][ch_idx], 
+                                       use_container_width=True)
+                
+                # Channel selection
+                st.write("**Channel Selection**")
+                config['selected_channel'] = st.selectbox(
+                    "Select channel for analysis",
+                    options=list(range(n_channels)),
+                    format_func=lambda x: img_info['channel_names'][x],
+                    key=f"multi_ch_sel_{i}"
+                )
+            
             st.markdown("---")
-            st.write("**MedSAM Input Preview**")
             
-            channel_inputs = prepare_channel_input(image, item['channel_config'])
+            # Preprocessing Controls
+            st.write("**Preprocessing for Analysis**")
             
-            if len(channel_inputs) == 1:
-                channel_img, channel_name = channel_inputs[0]
-                st.image(channel_img, caption=f"Input: {channel_name}", use_container_width=True)
+            # Get the selected channel data
+            if img_info['kind'] == 'rgb':
+                if config.get('selected_channel') is None:
+                    # Use RGB composite
+                    selected_data = img_info['rgb'].astype(np.float32)
+                    is_multichannel_data = True
+                else:
+                    # Use single channel from RGB
+                    selected_data = img_info['rgb'][:,:,config['selected_channel']].astype(np.float32)
+                    is_multichannel_data = False
+            elif img_info['kind'] == 'grayscale':
+                selected_data = img_info['grayscale'].astype(np.float32)
+                is_multichannel_data = False
+            elif img_info['kind'] == 'multichannel':
+                selected_data = img_info['channels'][config['selected_channel']].astype(np.float32)
+                is_multichannel_data = False
             else:
-                cols = st.columns(min(len(channel_inputs), 4))
-                for idx, (channel_img, channel_name) in enumerate(channel_inputs):
-                    with cols[idx % 4]:
-                        st.image(channel_img, caption=f"Input: {channel_name}", use_container_width=True)
+                st.error(f"Unknown image kind: {img_info['kind']}")
+                continue
             
-            st.success(f"Configuration saved for {item['name']}")
+            col_pp1, col_pp2 = st.columns(2)
+            
+            with col_pp1:
+                # Normalization
+                config['use_normalization'] = st.checkbox(
+                    "Normalize (percentile clip + scale to 0-255)",
+                    value=config['use_normalization'],
+                    key=f"norm_{i}"
+                )
+                
+                if config['use_normalization']:
+                    col_p1, col_p2 = st.columns(2)
+                    with col_p1:
+                        config['percentile_low'] = st.slider(
+                            "Low percentile",
+                            min_value=0.0,
+                            max_value=10.0,
+                            value=config['percentile_low'],
+                            step=0.1,
+                            key=f"p_low_{i}"
+                        )
+                    with col_p2:
+                        config['percentile_high'] = st.slider(
+                            "High percentile",
+                            min_value=90.0,
+                            max_value=100.0,
+                            value=config['percentile_high'],
+                            step=0.1,
+                            key=f"p_high_{i}"
+                        )
+            
+            with col_pp2:
+                # Smoothing
+                config['smoothing_sigma'] = st.slider(
+                    "Gaussian smoothing (sigma)",
+                    min_value=0.0,
+                    max_value=3.0,
+                    value=config['smoothing_sigma'],
+                    step=0.1,
+                    key=f"smooth_{i}",
+                    help="0 = no smoothing"
+                )
+            
+            # Thresholding (only for single-channel data)
+            if not is_multichannel_data:
+                st.write("**Thresholding** (optional)")
+                config['threshold_mode'] = st.radio(
+                    "Threshold Mode",
+                    options=['off', 'manual', 'otsu'],
+                    format_func=lambda x: {'off': 'Off', 'manual': 'Manual', 'otsu': 'Otsu Auto'}.get(x, x),
+                    key=f"thresh_mode_{i}",
+                    horizontal=True
+                )
+                
+                if config['threshold_mode'] != 'off':
+                    config['threshold_type'] = st.radio(
+                        "Threshold Type",
+                        options=['binary', 'masked'],
+                        format_func=lambda x: 'Binary Mask' if x == 'binary' else 'Masked Intensity',
+                        key=f"thresh_type_{i}",
+                        horizontal=True
+                    )
+                    
+                    if config['threshold_mode'] == 'manual':
+                        config['threshold_value'] = st.slider(
+                            "Threshold Value",
+                            min_value=0,
+                            max_value=255,
+                            value=int(config['threshold_value']),
+                            key=f"thresh_val_{i}"
+                        )
+            
+            # Build processed preview
+            st.markdown("---")
+            st.write("**Processed Preview**")
+            
+            if is_multichannel_data:
+                # For RGB composite, just apply normalization and smoothing
+                processed = selected_data.copy()
+                if config['use_normalization']:
+                    # Normalize each channel independently
+                    processed_ch = []
+                    for ch in range(3):
+                        ch_data = processed[:,:,ch]
+                        ch_norm = normalize_to_uint8(ch_data, 
+                                                    percentile_clip=(config['percentile_low'], 
+                                                                   config['percentile_high']))
+                        processed_ch.append(ch_norm)
+                    processed = np.stack(processed_ch, axis=2)
+                
+                if config['smoothing_sigma'] > 0:
+                    for ch in range(3):
+                        processed[:,:,ch] = apply_gaussian_smooth(processed[:,:,ch], config['smoothing_sigma'])
+                
+                # This will be the model input
+                model_input = processed.astype(np.uint8)
+                st.image(model_input, caption="Processed RGB Input for MicroSAM", use_container_width=True)
+            
+            else:
+                # Single-channel processing
+                processed = selected_data.copy()
+                
+                # Normalization
+                if config['use_normalization']:
+                    processed = normalize_to_uint8(processed, 
+                                                  percentile_clip=(config['percentile_low'], 
+                                                                 config['percentile_high']))
+                else:
+                    # Just clip to 0-255 range
+                    processed = np.clip(processed, 0, 255).astype(np.uint8)
+                
+                # Smoothing
+                if config['smoothing_sigma'] > 0:
+                    processed = apply_gaussian_smooth(processed, config['smoothing_sigma'])
+                
+                # Thresholding
+                if config['threshold_mode'] == 'manual':
+                    processed = apply_threshold(processed, config['threshold_value'], config['threshold_type'])
+                elif config['threshold_mode'] == 'otsu':
+                    try:
+                        thresh_val = threshold_otsu(processed.astype(np.uint8))
+                        processed = apply_threshold(processed, thresh_val, config['threshold_type'])
+                        st.info(f"Otsu threshold: {thresh_val:.1f}")
+                    except Exception as e:
+                        st.warning(f"Otsu thresholding failed: {e}")
+                
+                # Convert to uint8
+                processed = processed.astype(np.uint8)
+                
+                # Show preview
+                st.image(processed, caption="Processed Channel", use_container_width=True)
+                
+                # Replicate to 3 channels for model input
+                model_input = np.stack([processed, processed, processed], axis=2)
+                st.info("This channel will be replicated to RGB (3 channels) for MicroSAM input")
+            
+            # Store the processed input for analysis
+            item['processed_input'] = model_input
+            st.success(f"✓ Configuration saved for {item['name']}")
+    
+    st.markdown("---")
+    st.info("Go to **MicroSAM Analysis** tab to process your configured images")
 
 
 def analysis_page():
-    """MedSAM Analysis interface with segmentation - Multi-image queue support"""
-    st.title("MedSAM Analysis")
+    """MicroSAM Analysis interface with segmentation - Multi-image queue support"""
+    st.title("MicroSAM Analysis")
     
     # Check if we're in local mode and have images in queue
     is_local_mode = st.session_state.local_mode
@@ -1775,14 +2023,14 @@ def tabulation_page():
     st.title("Tabulation")
     
     st.markdown("""
-    Summary of MedSAM analysis results across all processed images.
+    Summary of MicroSAM analysis results across all processed images.
     """)
     
     # Check if we have any processed images
     processed_images = [item for item in st.session_state.images if item.get('status') == 'done' and item.get('result')]
     
     if not processed_images:
-        st.warning("No processed images yet. Please run MedSAM Analysis first.")
+        st.warning("No processed images yet. Please run MicroSAM Analysis first.")
         return
     
     st.info(f"Showing results for {len(processed_images)} processed image(s)")
@@ -1946,7 +2194,7 @@ def import_page():
 
 def main():
     """Main application"""
-    st.sidebar.title("XHaloPathAnalyzer")
+    st.sidebar.title("XHistoSegMicroSAM")
     st.sidebar.markdown("---")
     
     if not st.session_state.authenticated:
@@ -1964,7 +2212,7 @@ def main():
             nav_options = [
                 "Image Upload",
                 "Channels",
-                "MedSAM Analysis",
+                "MicroSAM Analysis",
                 "Tabulation",
                 "Export",
                 "Settings"
@@ -1972,7 +2220,7 @@ def main():
         else:
             nav_options = [
                 "Slide Selection",
-                "MedSAM Analysis",
+                "MicroSAM Analysis",
                 "Tabulation",
                 "Export",
                 "Import",
@@ -2000,7 +2248,7 @@ def main():
             slide_selection_page()
         elif page == "Channels":
             channels_page()
-        elif page == "MedSAM Analysis":
+        elif page == "MicroSAM Analysis":
             analysis_page()
         elif page == "Tabulation":
             tabulation_page()
