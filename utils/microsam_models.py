@@ -214,7 +214,7 @@ class MicroSAMPredictor:
         Returns:
             Binary mask as uint8 numpy array (0 or 255)
         """
-        from micro_sam.inference import batched_inference, batched_tiled_inference
+        from micro_sam.inference import batched_inference
         
         # Ensure proper image format
         image_rgb = self.ensure_rgb(image)
@@ -260,8 +260,14 @@ class MicroSAMPredictor:
         else:
             raise ValueError(f"Invalid prompt_mode: {prompt_mode}")
         
-        # Select inference function
-        inference_fn = batched_tiled_inference if tiled else batched_inference
+        # Note: batched_tiled_inference doesn't exist in v1.3.0
+        # Always use batched_inference regardless of tiled parameter
+        if tiled:
+            logger.warning(
+                "Tiled inference requested but not available in micro-sam v1.3.0. "
+                "Using batched_inference instead (may be slower for large images)."
+            )
+        inference_fn = batched_inference
         
         # Prepare kwargs
         kwargs = {
