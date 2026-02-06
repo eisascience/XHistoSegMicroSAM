@@ -143,6 +143,72 @@ def init_session_state():
 init_session_state()
 
 
+def render_threshold_params_ui() -> Dict[str, Any]:
+    """
+    Render UI controls for threshold-based box generation parameters.
+    
+    Returns:
+        Dictionary with threshold parameters
+    """
+    st.write("**Threshold-based Box Generation Settings**")
+    with st.expander("Configure Threshold Parameters", expanded=True):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            threshold_mode = st.selectbox(
+                "Threshold Mode",
+                options=["otsu", "manual", "off"],
+                index=0,
+                help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
+            )
+            
+            threshold_value = 0.5
+            if threshold_mode == "manual":
+                threshold_value = st.slider(
+                    "Threshold Value",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.01,
+                    help="Threshold value for binary mask generation (0-1)"
+                )
+        
+        with col_t2:
+            min_box_area = st.number_input(
+                "Min Box Area (px)",
+                min_value=10,
+                max_value=100000,
+                value=100,
+                step=10,
+                help="Minimum area in pixels for candidate components"
+            )
+            
+            max_box_area = st.number_input(
+                "Max Box Area (px)",
+                min_value=100,
+                max_value=1000000,
+                value=100000,
+                step=1000,
+                help="Maximum area in pixels for candidate components"
+            )
+        
+        dilation_radius = st.slider(
+            "Dilation Radius",
+            min_value=0,
+            max_value=10,
+            value=0,
+            step=1,
+            help="Pixels to dilate mask before boxing (to capture full nuclei)"
+        )
+        
+        return {
+            'threshold_mode': threshold_mode,
+            'threshold_value': threshold_value,
+            'min_area': min_box_area,
+            'max_area': max_box_area,
+            'dilation_radius': dilation_radius
+        }
+
+
 def authentication_page():
     """Authentication and configuration page"""
     st.markdown('<h1 class="main-header">XHistoSegMicroSAM</h1>', unsafe_allow_html=True)
@@ -1270,63 +1336,7 @@ def analysis_page():
         # Show threshold controls if auto_box_from_threshold mode is selected
         threshold_params = None
         if prompt_mode == "auto_box_from_threshold":
-            st.write("**Threshold-based Box Generation Settings**")
-            with st.expander("Configure Threshold Parameters", expanded=True):
-                col_t1, col_t2 = st.columns(2)
-                with col_t1:
-                    threshold_mode = st.selectbox(
-                        "Threshold Mode",
-                        options=["otsu", "manual", "off"],
-                        index=0,
-                        help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
-                    )
-                    
-                    threshold_value = 0.5
-                    if threshold_mode == "manual":
-                        threshold_value = st.slider(
-                            "Threshold Value",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=0.5,
-                            step=0.01,
-                            help="Threshold value for binary mask generation (0-1)"
-                        )
-                
-                with col_t2:
-                    min_box_area = st.number_input(
-                        "Min Box Area (px)",
-                        min_value=10,
-                        max_value=100000,
-                        value=100,
-                        step=10,
-                        help="Minimum area in pixels for candidate components"
-                    )
-                    
-                    max_box_area = st.number_input(
-                        "Max Box Area (px)",
-                        min_value=100,
-                        max_value=1000000,
-                        value=100000,
-                        step=1000,
-                        help="Maximum area in pixels for candidate components"
-                    )
-                
-                dilation_radius = st.slider(
-                    "Dilation Radius",
-                    min_value=0,
-                    max_value=10,
-                    value=0,
-                    step=1,
-                    help="Pixels to dilate mask before boxing (to capture full nuclei)"
-                )
-                
-                threshold_params = {
-                    'threshold_mode': threshold_mode,
-                    'threshold_value': threshold_value,
-                    'min_area': min_box_area,
-                    'max_area': max_box_area,
-                    'dilation_radius': dilation_radius
-                }
+            threshold_params = render_threshold_params_ui()
         
         # Advanced settings in expander
         with st.expander("Advanced Segmentation Settings"):
@@ -1773,63 +1783,7 @@ def analysis_page():
         # Show threshold controls if auto_box_from_threshold mode is selected
         threshold_params = None
         if prompt_mode == "auto_box_from_threshold":
-            st.write("**Threshold-based Box Generation Settings**")
-            with st.expander("Configure Threshold Parameters", expanded=True):
-                col_t1, col_t2 = st.columns(2)
-                with col_t1:
-                    threshold_mode = st.selectbox(
-                        "Threshold Mode",
-                        options=["otsu", "manual", "off"],
-                        index=0,
-                        help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
-                    )
-                    
-                    threshold_value = 0.5
-                    if threshold_mode == "manual":
-                        threshold_value = st.slider(
-                            "Threshold Value",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=0.5,
-                            step=0.01,
-                            help="Threshold value for binary mask generation (0-1)"
-                        )
-                
-                with col_t2:
-                    min_box_area = st.number_input(
-                        "Min Box Area (px)",
-                        min_value=10,
-                        max_value=100000,
-                        value=100,
-                        step=10,
-                        help="Minimum area in pixels for candidate components"
-                    )
-                    
-                    max_box_area = st.number_input(
-                        "Max Box Area (px)",
-                        min_value=100,
-                        max_value=1000000,
-                        value=100000,
-                        step=1000,
-                        help="Maximum area in pixels for candidate components"
-                    )
-                
-                dilation_radius = st.slider(
-                    "Dilation Radius",
-                    min_value=0,
-                    max_value=10,
-                    value=0,
-                    step=1,
-                    help="Pixels to dilate mask before boxing (to capture full nuclei)"
-                )
-                
-                threshold_params = {
-                    'threshold_mode': threshold_mode,
-                    'threshold_value': threshold_value,
-                    'min_area': min_box_area,
-                    'max_area': max_box_area,
-                    'dilation_radius': dilation_radius
-                }
+            threshold_params = render_threshold_params_ui()
         
         # Advanced settings in expander
         with st.expander("Advanced Segmentation Settings"):

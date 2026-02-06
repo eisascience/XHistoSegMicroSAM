@@ -282,12 +282,10 @@ def compute_boxes_from_threshold(
         # No thresholding, use full image
         binary_mask = np.ones_like(gray, dtype=bool)
     elif threshold_mode == "otsu":
-        # Otsu's method
-        if normalize:
-            thresh = threshold_otsu(gray)
-        else:
-            thresh = threshold_otsu(gray.astype(np.float32) / 255.0) * 255
-        binary_mask = gray > thresh
+        # Otsu's method - always needs normalized input
+        gray_norm = gray if normalize else gray.astype(np.float32) / 255.0
+        thresh = threshold_otsu(gray_norm)
+        binary_mask = gray_norm > thresh
         logger.info(f"Otsu threshold: {thresh:.3f}")
     else:  # manual
         binary_mask = gray > threshold_value

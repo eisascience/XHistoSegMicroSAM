@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 _ELF_AVAILABLE = importlib.util.find_spec("elf") is not None
 
 if not _ELF_AVAILABLE:
-    logger.warning(
+    # Log at debug level on import - user will see info message when they try to use it
+    logger.debug(
         "python-elf is not available. Automatic instance segmentation modes (APG/AIS) will not work. "
-        "For automatic segmentation, use a conda environment with python-elf from conda-forge. "
         "Prompt-based modes (point, auto_box, auto_box_from_threshold) work without elf."
     )
 
