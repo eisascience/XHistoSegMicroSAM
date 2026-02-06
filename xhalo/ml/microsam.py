@@ -11,8 +11,21 @@ from typing import Optional, Tuple, List, Union
 import logging
 from pathlib import Path
 import warnings
+import importlib.util
 
 logger = logging.getLogger(__name__)
+
+# Check if elf is available at runtime
+# elf (python-elf) is required for automatic instance segmentation (APG/AIS modes)
+# but cannot be installed in Python 3.11 due to numba/llvmlite constraints
+_ELF_AVAILABLE = importlib.util.find_spec("elf") is not None
+
+if not _ELF_AVAILABLE:
+    # Log at debug level on import - user will see info message when they try to use it
+    logger.debug(
+        "python-elf is not available. Automatic instance segmentation modes (APG/AIS) will not work. "
+        "Prompt-based modes (point, auto_box, auto_box_from_threshold) work without elf."
+    )
 
 
 class MicroSAMPredictor:
@@ -271,6 +284,9 @@ class MicroSAMPredictor:
         """
         Perform automatic instance segmentation without prompts.
         
+        IMPORTANT: This method requires python-elf to be installed, which is not available
+        in Python 3.11 environments. Use prompt-based modes instead.
+        
         Args:
             image: RGB image array (H, W, 3)
             embeddings_path: Optional path to precomputed embeddings
@@ -288,7 +304,21 @@ class MicroSAMPredictor:
             
         Returns:
             Instance segmentation mask (H, W) with 0=background, 1..N=instance IDs
+            
+        Raises:
+            RuntimeError: If elf is not available
         """
+        # Check if elf is available
+        if not _ELF_AVAILABLE:
+            raise RuntimeError(
+                "Automatic instance segmentation (APG/AIS) requires python-elf, which is not installed. "
+                "python-elf cannot be installed in Python 3.11 due to numba/llvmlite constraints. "
+                "Please use one of these alternatives:\n"
+                "1. Use prompt-based modes: point, auto_box, or auto_box_from_threshold\n"
+                "2. Create a conda environment with Python <3.10 and install python-elf from conda-forge\n"
+                "Prompt-based modes provide excellent cell/nucleus segmentation without requiring elf."
+            )
+        
         from micro_sam.instance_segmentation import get_instance_segmentation_generator
         
         # Ensure RGB format
@@ -388,3 +418,40 @@ def segment_tissue(
         mask = gray < threshold
     
     return mask.astype(np.uint8) * 255
+
+
+def is_elf_available() -> bool:
+    """
+    Check if python-elf is available at runtime.
+    
+    Returns:
+        True if elf is available, False otherwise
+    """
+    return _ELF_AVAILABLE
+
+
+def get_elf_info_message() -> str:
+    """
+    Get informational message about elf availability and alternatives.
+    
+    Returns:
+        Formatted message string
+    """
+    if _ELF_AVAILABLE:
+        return "✓ python-elf is available. All segmentation modes are supported."
+    else:
+        return (
+            "⚠️ python-elf is not available. Automatic instance segmentation (APG/AIS) is disabled.\n\n"
+            "**Available modes:**\n"
+            "- point: Interactive point prompts\n"
+            "- auto_box: Auto-detect tissue bounding box\n"
+            "- auto_box_from_threshold: Generate boxes from thresholded channel (recommended for nuclei)\n"
+            "- full_box: Use entire image\n\n"
+            "**To enable automatic modes:**\n"
+            "Create a conda environment with Python <3.10 and install:\n"
+            "```\n"
+            "conda create -n microsam-auto python=3.9\n"
+            "conda activate microsam-auto\n"
+            "conda install -c conda-forge python-elf\n"
+            "```"
+        )
