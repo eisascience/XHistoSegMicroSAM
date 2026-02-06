@@ -145,8 +145,8 @@ init_session_state()
 
 def authentication_page():
     """Authentication and configuration page"""
-    st.markdown('<h1 class="main-header">XHaloPathAnalyzer</h1>', unsafe_allow_html=True)
-    st.markdown("### Web-Based GUI for Halo Digital Pathology Analysis")
+    st.markdown('<h1 class="main-header">XHistoSegMicroSAM</h1>', unsafe_allow_html=True)
+    st.markdown("### Web-Based GUI for Histopathology MicroSAM Analysis")
     
     st.markdown("---")
     
@@ -176,7 +176,7 @@ def authentication_page():
             st.write("Upload single or multiple images for analysis")
         with col2:
             st.markdown("**AI Analysis**")
-            st.write("Run MedSAM segmentation on uploaded images")
+            st.write("Run MicroSAM segmentation on uploaded images")
         with col3:
             st.markdown("**Export Results**")
             st.write("Download segmentation masks and GeoJSON")
@@ -245,7 +245,7 @@ def authentication_page():
             st.write("Browse and select slides from your Halo instance")
         with col2:
             st.markdown("**AI Analysis**")
-            st.write("Run MedSAM segmentation on regions of interest")
+            st.write("Run MicroSAM segmentation on regions of interest")
         with col3:
             st.markdown("**Export Results**")
             st.write("Generate GeoJSON annotations for Halo import")
@@ -337,7 +337,7 @@ def slide_selection_page():
 
 def prepare_channel_input(image: np.ndarray, channel_config: Dict[str, Any]) -> List[Tuple[np.ndarray, str]]:
     """
-    Prepare channel input(s) for MedSAM based on channel configuration.
+    Prepare channel input(s) for MicroSAM based on channel configuration.
     
     Args:
         image: RGB uint8 image (H, W, 3)
@@ -830,7 +830,7 @@ def image_upload_page():
                 st.session_state.images = []
                 st.rerun()
         
-        st.info("Go to **MedSAM Analysis** tab to process your images")
+        st.info("Go to **Channels** tab to configure channels, then **MicroSAM Analysis** to process your images")
         
     else:
         st.info("Please upload one or more images to get started")
@@ -845,7 +845,7 @@ def channels_page():
     st.title("Channels")
     
     st.markdown("""
-    Preview individual color channels and configure which channels to use for MedSAM analysis.
+    Preview individual color channels and configure which channels to use for MicroSAM analysis.
     """)
     
     # Check if we have images
@@ -942,9 +942,9 @@ def channels_page():
                         st.warning("Please select at least one channel")
                         item['channel_config']['channels'] = ['R']
             
-            # Show preview of what will be fed to MedSAM
+            # Show preview of what will be fed to MicroSAM
             st.markdown("---")
-            st.write("**MedSAM Input Preview**")
+            st.write("**MicroSAM Input Preview**")
             
             channel_inputs = prepare_channel_input(image, item['channel_config'])
             
@@ -961,8 +961,8 @@ def channels_page():
 
 
 def analysis_page():
-    """MedSAM Analysis interface with segmentation - Multi-image queue support"""
-    st.title("MedSAM Analysis")
+    """MicroSAM Analysis interface with segmentation - Multi-image queue support"""
+    st.title("MicroSAM Analysis")
     
     # Check if we're in local mode and have images in queue
     is_local_mode = st.session_state.local_mode
@@ -1775,14 +1775,14 @@ def tabulation_page():
     st.title("Tabulation")
     
     st.markdown("""
-    Summary of MedSAM analysis results across all processed images.
+    Summary of MicroSAM analysis results across all processed images.
     """)
     
     # Check if we have any processed images
     processed_images = [item for item in st.session_state.images if item.get('status') == 'done' and item.get('result')]
     
     if not processed_images:
-        st.warning("No processed images yet. Please run MedSAM Analysis first.")
+        st.warning("No processed images yet. Please run MicroSAM Analysis first.")
         return
     
     st.info(f"Showing results for {len(processed_images)} processed image(s)")
@@ -1946,7 +1946,7 @@ def import_page():
 
 def main():
     """Main application"""
-    st.sidebar.title("XHaloPathAnalyzer")
+    st.sidebar.title("XHistoSegMicroSAM")
     st.sidebar.markdown("---")
     
     if not st.session_state.authenticated:
@@ -1964,7 +1964,7 @@ def main():
             nav_options = [
                 "Image Upload",
                 "Channels",
-                "MedSAM Analysis",
+                "MicroSAM Analysis",
                 "Tabulation",
                 "Export",
                 "Settings"
@@ -1972,7 +1972,7 @@ def main():
         else:
             nav_options = [
                 "Slide Selection",
-                "MedSAM Analysis",
+                "MicroSAM Analysis",
                 "Tabulation",
                 "Export",
                 "Import",
@@ -2000,7 +2000,7 @@ def main():
             slide_selection_page()
         elif page == "Channels":
             channels_page()
-        elif page == "MedSAM Analysis":
+        elif page == "MicroSAM Analysis":
             analysis_page()
         elif page == "Tabulation":
             tabulation_page()
