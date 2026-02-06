@@ -15,6 +15,9 @@ import numpy as np
 from typing import Dict, List, Any
 from scipy import ndimage
 
+# Constants
+EPSILON = 1e-6  # Small value to prevent division by zero
+
 
 class MultiChannelHierarchicalPipeline(BasePipeline):
     """
@@ -154,10 +157,16 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
             cell_region = None
             for cell_mask in cell_masks.values():
                 centroid = ndimage.center_of_mass(nuc_region)
-                cell_id = cell_mask[int(centroid[0]), int(centroid[1])]
-                if cell_id > 0:
-                    cell_region = (cell_mask == cell_id)
-                    break
+                # Add boundary checks to prevent index out of bounds
+                centroid_y = int(centroid[0])
+                centroid_x = int(centroid[1])
+                
+                # Ensure centroid is within mask bounds
+                if 0 <= centroid_y < cell_mask.shape[0] and 0 <= centroid_x < cell_mask.shape[1]:
+                    cell_id = cell_mask[centroid_y, centroid_x]
+                    if cell_id > 0:
+                        cell_region = (cell_mask == cell_id)
+                        break
             
             # Measure each signal channel
             measurement = {'nucleus_id': int(nuc_id)}
@@ -175,7 +184,7 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
                         measurement[f'{sig_channel}_cytoplasmic'] = float(np.mean(sig_img[cyto_region]))
                         measurement[f'{sig_channel}_ratio'] = (
                             measurement[f'{sig_channel}_nuclear'] / 
-                            (measurement[f'{sig_channel}_cytoplasmic'] + 1e-6)
+                            (measurement[f'{sig_channel}_cytoplasmic'] + EPSILON)
                         )
             
             measurements.append(measurement)

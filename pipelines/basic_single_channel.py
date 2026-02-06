@@ -9,6 +9,10 @@ from .base import BasePipeline
 import numpy as np
 from typing import Dict, List, Any
 
+# Visualization constants
+OVERLAY_ALPHA = 0.5  # Blending factor for overlay (0.0 = original, 1.0 = mask color only)
+OVERLAY_COLOR = [255, 0, 0]  # Red color for mask overlay (RGB)
+
 
 class BasicSingleChannelPipeline(BasePipeline):
     """
@@ -140,7 +144,7 @@ class BasicSingleChannelPipeline(BasePipeline):
         # Create overlay
         mask_binary = (mask > 0).astype(np.uint8) * 255
         overlay = image.copy()
-        overlay[mask > 0] = overlay[mask > 0] * 0.5 + np.array([255, 0, 0]) * 0.5
+        overlay[mask > 0] = overlay[mask > 0] * (1 - OVERLAY_ALPHA) + np.array(OVERLAY_COLOR) * OVERLAY_ALPHA
         
         col1, col2, col3 = st.columns(3)
         with col1:

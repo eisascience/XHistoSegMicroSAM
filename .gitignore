@@ -110,3 +110,4 @@ htmlcov/
 # Docker volumes
 data/
 models/
+test_pipelines.py
