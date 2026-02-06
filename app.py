@@ -1653,8 +1653,9 @@ def analysis_page():
                         with col2:
                             st.metric("Coverage", f"{stats.get('coverage_percent', 0):.2f}%")
                         with col3:
-                            if 'area_mm2' in stats:
-                                st.metric("Area", f"{stats['area_mm2']:.4f} mm²")
+                            area_mm2 = stats.get('area_mm2')
+                            if area_mm2 is not None:
+                                st.metric("Area", f"{area_mm2:.4f} mm²")
                     
                     # Visualizations
                     st.write("**Visualizations**")
