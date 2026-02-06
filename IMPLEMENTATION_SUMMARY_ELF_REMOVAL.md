@@ -1,3 +1,20 @@
+# ⚠️ CRITICAL WARNING: The workarounds described below DO NOT actually work with Python 3.11
+#
+# After extensive testing, we discovered:
+# - Python 3.11 + micro-sam v1.7.1 → python-elf CANNOT be installed (numba/llvmlite constraint)
+# - Python 3.10 + micro-sam v1.7.1 → python-elf CANNOT be installed (numba/llvmlite constraint)
+# - The ONLY working configuration is: Python 3.9 + micro-sam v1.3.0
+#
+# The documentation below describes an attempted solution that allows the app to run
+# in Python 3.11 with DEGRADED functionality (no automatic segmentation modes).
+# However, for FULL functionality including APG/AIS automatic modes, you MUST use:
+#   - Python 3.9
+#   - micro-sam v1.3.0
+#   - conda environment with python-elf
+#
+# See README.md and TROUBLESHOOTING.md for the correct installation procedure.
+# ============================================================================
+
 # Implementation Summary: Python 3.11 + uv Compatibility
 
 ## Problem

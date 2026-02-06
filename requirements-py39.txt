@@ -1,0 +1,56 @@
+# XHistoSegMicroSAM - Python 3.9 Requirements
+# This is the ONLY supported Python version due to dependency constraints
+
+# Web Framework
+streamlit>=1.28.0
+
+# GraphQL API
+gql[all]>=3.4.1
+aiohttp>=3.9.0
+graphql-core>=3.2.0
+
+# Image Processing
+pillow>=10.0.0
+numpy>=1.24.0,<2.0.0
+opencv-python>=4.8.0,<4.10.0
+matplotlib>=3.7.0
+scikit-image>=0.21.0
+scipy>=1.11.0
+tifffile>=2023.7.0
+
+# Large Image / Whole Slide
+large-image==1.33.5
+large-image-source-openslide==1.33.5
+openslide-python>=1.3.0
+
+# Geospatial
+geojson>=3.0.0
+shapely>=2.0.0
+
+# ML / PyTorch
+torch==2.6.0
+torchvision==0.21.0
+segment-anything>=1.0
+zarr>=2.16.0
+
+# micro-sam dependencies (install before micro-sam)
+pooch>=1.6.0
+imageio>=2.31.1
+napari-plugin-engine>=0.1.4
+xxhash>=3.0.0
+kornia>=0.6.0
+h5py>=3.0.0
+
+# Utilities
+requests>=2.31.0
+python-dotenv>=1.0.0
+pandas>=2.0.0
+tqdm>=4.66.0
+requests-toolbelt>=1.0.0
+pydantic>=2.0.0
+plotly>=5.17.0
+
+# Note: After installing these, run:
+# conda install -c conda-forge python-elf vigra nifty -y
+# pip install git+https://github.com/constantinpape/torch-em.git
+# pip install git+https://github.com/computational-cell-analytics/micro-sam.git@v1.3.0

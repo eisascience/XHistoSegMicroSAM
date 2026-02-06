@@ -25,6 +25,14 @@ venv/
 ENV/
 env/
 .venv
+.venv/
+xhisto/
+
+# Temporary files
+requirements-temp.txt
+
+# Deprecated files
+*.deprecated
 
 # IDEs
 .vscode/
