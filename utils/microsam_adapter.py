@@ -12,8 +12,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Import MicroSAM predictor
-from xhalo.ml import MicroSAMPredictor as BaseMicroSAMPredictor
+# Import MicroSAM predictor and elf availability check
+from xhalo.ml import MicroSAMPredictor as BaseMicroSAMPredictor, is_elf_available
 
 
 class MicroSAMPredictor:
@@ -41,6 +41,14 @@ class MicroSAMPredictor:
             tile_shape: Tile size for tiled inference
             halo: Halo size for tiled inference
         """
+        # Check if automatic mode is requested but elf is not available
+        if segmentation_mode == "automatic" and not is_elf_available():
+            logger.warning(
+                "Automatic segmentation mode requires python-elf, which is not available. "
+                "Falling back to interactive mode. Use prompt-based modes instead."
+            )
+            segmentation_mode = "interactive"
+        
         self.segmentation_mode = segmentation_mode
         self.device = device
         
@@ -64,24 +72,34 @@ class MicroSAMPredictor:
         box: Optional[np.ndarray] = None,
         multimask_output: bool = False,
         min_area_ratio: float = 0.01,
-        morph_kernel_size: int = 5
+        morph_kernel_size: int = 5,
+        threshold_mode: str = "otsu",
+        threshold_value: float = 0.5,
+        box_min_area: int = 100,
+        box_max_area: int = 100000,
+        box_dilation_radius: int = 0
     ) -> np.ndarray:
         """
         Run inference with MedSAM-compatible interface.
         
         Args:
             image: Input RGB image (H, W, 3)
-            prompt_mode: Prompt mode - "auto_box", "full_box", or "point" (ignored in automatic mode)
+            prompt_mode: Prompt mode - "auto_box", "full_box", "point", or "auto_box_from_threshold"
             point_coords: Point prompts (N, 2) in (x, y) format
             point_labels: Labels for points (1 = foreground, 0 = background)
             box: Bounding box prompt [x1, y1, x2, y2]
             multimask_output: Whether to use multimasking
             min_area_ratio: Minimum area ratio for auto tissue detection
             morph_kernel_size: Kernel size for morphological operations
+            threshold_mode: Threshold mode for auto_box_from_threshold ("manual", "otsu", "off")
+            threshold_value: Threshold value (0-1) for manual mode
+            box_min_area: Minimum box area for auto_box_from_threshold
+            box_max_area: Maximum box area for auto_box_from_threshold
+            box_dilation_radius: Dilation radius for auto_box_from_threshold
             
         Returns:
             Binary mask (H, W) with 0=background, 255=foreground
-            OR instance mask (H, W) with 0=background, 1..N=instances (if automatic mode)
+            OR instance mask (H, W) with 0=background, 1..N=instances (if automatic mode or auto_box_from_threshold)
         """
         # Ensure RGB format
         image = self.predictor.ensure_rgb(image)
@@ -117,6 +135,25 @@ class MicroSAMPredictor:
                 # Use provided box
                 boxes_prompt = np.array([box])  # Shape (1, 4)
                 logger.info(f"Using provided box: {box}")
+                
+            elif prompt_mode == "auto_box_from_threshold":
+                # Generate boxes from thresholded image
+                boxes, binary_threshold_mask = compute_boxes_from_threshold(
+                    image=image,
+                    threshold_mode=threshold_mode,
+                    threshold_value=threshold_value,
+                    min_area=box_min_area,
+                    max_area=box_max_area,
+                    dilation_radius=box_dilation_radius,
+                    normalize=True
+                )
+                
+                if len(boxes) == 0:
+                    logger.warning("No boxes found from threshold. Returning empty mask.")
+                    return np.zeros((h, w), dtype=np.uint8)
+                
+                boxes_prompt = boxes
+                logger.info(f"Generated {len(boxes)} boxes from threshold")
                 
             elif prompt_mode == "auto_box":
                 # Auto-detect tissue region
@@ -156,11 +193,15 @@ class MicroSAMPredictor:
                     tiled=True
                 )
                 
-                # Convert to binary mask for compatibility
-                binary_mask = (instance_mask > 0).astype(np.uint8) * 255
-                
-                logger.info(f"Interactive segmentation complete")
-                return binary_mask
+                # For auto_box_from_threshold, return instance mask with IDs
+                # For other modes, convert to binary mask for compatibility
+                if prompt_mode == "auto_box_from_threshold":
+                    logger.info(f"Instance segmentation complete: {np.unique(instance_mask).size - 1} instances")
+                    return instance_mask  # Return instance IDs
+                else:
+                    binary_mask = (instance_mask > 0).astype(np.uint8) * 255
+                    logger.info(f"Interactive segmentation complete")
+                    return binary_mask
                 
             except Exception as e:
                 logger.error(f"MicroSAM prediction failed: {e}")
@@ -183,3 +224,99 @@ def _compute_tissue_bbox(
     """Compute tissue bounding box."""
     from utils.medsam_models import _compute_tissue_bbox as original_compute_bbox
     return original_compute_bbox(image, min_area_ratio, morph_kernel_size)
+
+
+def compute_boxes_from_threshold(
+    image: np.ndarray,
+    threshold_mode: str = "otsu",
+    threshold_value: float = 0.5,
+    min_area: int = 100,
+    max_area: int = 100000,
+    dilation_radius: int = 0,
+    normalize: bool = True
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Generate bounding boxes from thresholded image for auto_box_from_threshold mode.
+    
+    This is useful for cell/nucleus segmentation where you want to:
+    1. Threshold a DAPI or similar channel
+    2. Extract connected components
+    3. Generate bounding boxes for each component
+    4. Use boxes as prompts for MicroSAM instance segmentation
+    
+    Args:
+        image: Input image (H, W) grayscale or (H, W, 3) RGB
+        threshold_mode: "manual", "otsu", or "off"
+        threshold_value: Threshold value (0-1) if manual mode
+        min_area: Minimum area in pixels for components
+        max_area: Maximum area in pixels for components
+        dilation_radius: Pixels to dilate mask before boxing (to capture full nuclei)
+        normalize: Whether to normalize image before thresholding
+        
+    Returns:
+        boxes: (N, 4) array of boxes [x1, y1, x2, y2]
+        binary_mask: (H, W) binary mask of thresholded regions
+    """
+    from skimage import measure, morphology
+    from skimage.filters import threshold_otsu
+    import cv2
+    
+    # Convert to grayscale if needed
+    if image.ndim == 3:
+        if image.shape[2] == 3:
+            # RGB to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image[:, :, 0]  # Take first channel
+    else:
+        gray = image.copy()
+    
+    # Normalize to [0, 1] if needed
+    if normalize:
+        gray = gray.astype(np.float32)
+        if gray.max() > 1.0:
+            gray = gray / 255.0
+    
+    # Apply threshold
+    if threshold_mode == "off":
+        # No thresholding, use full image
+        binary_mask = np.ones_like(gray, dtype=bool)
+    elif threshold_mode == "otsu":
+        # Otsu's method
+        if normalize:
+            thresh = threshold_otsu(gray)
+        else:
+            thresh = threshold_otsu(gray.astype(np.float32) / 255.0) * 255
+        binary_mask = gray > thresh
+        logger.info(f"Otsu threshold: {thresh:.3f}")
+    else:  # manual
+        binary_mask = gray > threshold_value
+        logger.info(f"Manual threshold: {threshold_value:.3f}")
+    
+    # Apply dilation if requested
+    if dilation_radius > 0:
+        struct = morphology.disk(dilation_radius)
+        binary_mask = morphology.binary_dilation(binary_mask, struct)
+        logger.info(f"Applied dilation with radius {dilation_radius}")
+    
+    # Label connected components
+    labeled_mask = measure.label(binary_mask)
+    regions = measure.regionprops(labeled_mask)
+    
+    logger.info(f"Found {len(regions)} connected components before filtering")
+    
+    # Filter by area and extract bounding boxes
+    boxes = []
+    for region in regions:
+        area = region.area
+        if min_area <= area <= max_area:
+            # Get bounding box in (min_row, min_col, max_row, max_col) format
+            min_row, min_col, max_row, max_col = region.bbox
+            # Convert to (x1, y1, x2, y2) format for MicroSAM
+            boxes.append([min_col, min_row, max_col, max_row])
+    
+    boxes = np.array(boxes) if boxes else np.empty((0, 4))
+    
+    logger.info(f"Extracted {len(boxes)} boxes after area filtering (min={min_area}, max={max_area})")
+    
+    return boxes, binary_mask.astype(np.uint8)

@@ -528,17 +528,19 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
                          min_area_ratio: float = 0.01,
                          morph_kernel_size: int = 5,
                          post_processing: Optional[Dict[str, Any]] = None,
-                         merge_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                         merge_config: Optional[Dict[str, Any]] = None,
+                         threshold_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Run analysis on a single image item with channel and post-processing support.
     
     Args:
         item: Image item dict with 'bytes' or 'processed_input' field
-        prompt_mode: Segmentation prompt mode (auto_box, full_box, point)
+        prompt_mode: Segmentation prompt mode (auto_box, full_box, point, auto_box_from_threshold)
         multimask_output: Whether to generate multiple mask predictions
         min_area_ratio: Minimum area ratio for tissue detection (0-1)
         morph_kernel_size: Kernel size for morphological operations (odd integer)
         post_processing: Dict with post-processing params (min_area_px, fill_holes, etc.)
         merge_config: Dict with merge mode and k_value for multi-channel merging
+        threshold_params: Dict with threshold params for auto_box_from_threshold mode
         
     Returns:
         Dict with the following keys:
@@ -630,13 +632,25 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
         h, w = model_input.shape[:2]
         prompt_box = np.array([0, 0, w - 1, h - 1])
     
+    # Prepare threshold parameters for auto_box_from_threshold mode
+    threshold_kwargs = {}
+    if prompt_mode == "auto_box_from_threshold" and threshold_params:
+        threshold_kwargs = {
+            'threshold_mode': threshold_params.get('threshold_mode', 'otsu'),
+            'threshold_value': threshold_params.get('threshold_value', 0.5),
+            'box_min_area': threshold_params.get('min_area', 100),
+            'box_max_area': threshold_params.get('max_area', 100000),
+            'box_dilation_radius': threshold_params.get('dilation_radius', 0)
+        }
+    
     # Run segmentation on the processed input
     mask = st.session_state.predictor.predict(
         model_input,
         prompt_mode=prompt_mode,
         multimask_output=multimask_output,
         min_area_ratio=min_area_ratio,
-        morph_kernel_size=morph_kernel_size
+        morph_kernel_size=morph_kernel_size,
+        **threshold_kwargs
     )
     
     channel_masks = {'processed': mask}  # Single processed channel
@@ -1223,6 +1237,11 @@ def analysis_page():
         
         st.info(f"Image Queue: {len(st.session_state.images)} image(s)")
         
+        # Check elf availability and show warning if needed
+        from xhalo.ml import is_elf_available, get_elf_info_message
+        if not is_elf_available():
+            st.info(get_elf_info_message())
+        
         # Analysis settings (common for all images)
         st.subheader("Analysis Settings")
         
@@ -1231,9 +1250,14 @@ def analysis_page():
         with col_set1:
             prompt_mode = st.selectbox(
                 "Prompt Mode",
-                options=["auto_box", "full_box", "point"],
+                options=["auto_box", "auto_box_from_threshold", "full_box", "point"],
                 index=0,
-                help="auto_box: Auto-detect tissue region; full_box: Use entire image; point: Use center point"
+                help=(
+                    "auto_box: Auto-detect tissue region\n"
+                    "auto_box_from_threshold: Generate boxes from thresholded channel (best for nuclei)\n"
+                    "full_box: Use entire image\n"
+                    "point: Use center point"
+                )
             )
         
         with col_set2:
@@ -1242,6 +1266,67 @@ def analysis_page():
                 value=False,
                 help="Generate multiple mask predictions and select the best one"
             )
+        
+        # Show threshold controls if auto_box_from_threshold mode is selected
+        threshold_params = None
+        if prompt_mode == "auto_box_from_threshold":
+            st.write("**Threshold-based Box Generation Settings**")
+            with st.expander("Configure Threshold Parameters", expanded=True):
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    threshold_mode = st.selectbox(
+                        "Threshold Mode",
+                        options=["otsu", "manual", "off"],
+                        index=0,
+                        help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
+                    )
+                    
+                    threshold_value = 0.5
+                    if threshold_mode == "manual":
+                        threshold_value = st.slider(
+                            "Threshold Value",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=0.5,
+                            step=0.01,
+                            help="Threshold value for binary mask generation (0-1)"
+                        )
+                
+                with col_t2:
+                    min_box_area = st.number_input(
+                        "Min Box Area (px)",
+                        min_value=10,
+                        max_value=100000,
+                        value=100,
+                        step=10,
+                        help="Minimum area in pixels for candidate components"
+                    )
+                    
+                    max_box_area = st.number_input(
+                        "Max Box Area (px)",
+                        min_value=100,
+                        max_value=1000000,
+                        value=100000,
+                        step=1000,
+                        help="Maximum area in pixels for candidate components"
+                    )
+                
+                dilation_radius = st.slider(
+                    "Dilation Radius",
+                    min_value=0,
+                    max_value=10,
+                    value=0,
+                    step=1,
+                    help="Pixels to dilate mask before boxing (to capture full nuclei)"
+                )
+                
+                threshold_params = {
+                    'threshold_mode': threshold_mode,
+                    'threshold_value': threshold_value,
+                    'min_area': min_box_area,
+                    'max_area': max_box_area,
+                    'dilation_radius': dilation_radius
+                }
         
         # Advanced settings in expander
         with st.expander("Advanced Segmentation Settings"):
@@ -1441,7 +1526,8 @@ def analysis_page():
                         min_area_ratio=min_area_ratio,
                         morph_kernel_size=morph_kernel_size,
                         post_processing=post_processing,
-                        merge_config=merge_config
+                        merge_config=merge_config,
+                        threshold_params=threshold_params
                     )
                     processing_item['result'] = result
                     processing_item['status'] = 'done'
@@ -1501,7 +1587,8 @@ def analysis_page():
                         min_area_ratio=min_area_ratio,
                         morph_kernel_size=morph_kernel_size,
                         post_processing=post_processing,
-                        merge_config=merge_config
+                        merge_config=merge_config,
+                        threshold_params=threshold_params
                     )
                     processing_item['result'] = result
                     processing_item['status'] = 'done'
@@ -1661,6 +1748,11 @@ def analysis_page():
         
         st.markdown("---")
         
+        # Check elf availability and show warning if needed
+        from xhalo.ml import is_elf_available, get_elf_info_message
+        if not is_elf_available():
+            st.info(get_elf_info_message())
+        
         # Analysis settings
         st.subheader("Analysis Settings")
         
@@ -1668,10 +1760,76 @@ def analysis_page():
         st.write("**Segmentation Prompt Mode**")
         prompt_mode = st.selectbox(
             "Prompt Mode",
-            options=["auto_box", "full_box", "point"],
+            options=["auto_box", "auto_box_from_threshold", "full_box", "point"],
             index=0,
-            help="auto_box: Auto-detect tissue region; full_box: Use entire image; point: Use center point"
+            help=(
+                "auto_box: Auto-detect tissue region\n"
+                "auto_box_from_threshold: Generate boxes from thresholded channel (best for nuclei)\n"
+                "full_box: Use entire image\n"
+                "point: Use center point"
+            )
         )
+        
+        # Show threshold controls if auto_box_from_threshold mode is selected
+        threshold_params = None
+        if prompt_mode == "auto_box_from_threshold":
+            st.write("**Threshold-based Box Generation Settings**")
+            with st.expander("Configure Threshold Parameters", expanded=True):
+                col_t1, col_t2 = st.columns(2)
+                with col_t1:
+                    threshold_mode = st.selectbox(
+                        "Threshold Mode",
+                        options=["otsu", "manual", "off"],
+                        index=0,
+                        help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
+                    )
+                    
+                    threshold_value = 0.5
+                    if threshold_mode == "manual":
+                        threshold_value = st.slider(
+                            "Threshold Value",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=0.5,
+                            step=0.01,
+                            help="Threshold value for binary mask generation (0-1)"
+                        )
+                
+                with col_t2:
+                    min_box_area = st.number_input(
+                        "Min Box Area (px)",
+                        min_value=10,
+                        max_value=100000,
+                        value=100,
+                        step=10,
+                        help="Minimum area in pixels for candidate components"
+                    )
+                    
+                    max_box_area = st.number_input(
+                        "Max Box Area (px)",
+                        min_value=100,
+                        max_value=1000000,
+                        value=100000,
+                        step=1000,
+                        help="Maximum area in pixels for candidate components"
+                    )
+                
+                dilation_radius = st.slider(
+                    "Dilation Radius",
+                    min_value=0,
+                    max_value=10,
+                    value=0,
+                    step=1,
+                    help="Pixels to dilate mask before boxing (to capture full nuclei)"
+                )
+                
+                threshold_params = {
+                    'threshold_mode': threshold_mode,
+                    'threshold_value': threshold_value,
+                    'min_area': min_box_area,
+                    'max_area': max_box_area,
+                    'dilation_radius': dilation_radius
+                }
         
         # Advanced settings in expander
         with st.expander("Advanced Segmentation Settings"):
@@ -1761,12 +1919,24 @@ def analysis_page():
                             prompt_box = np.array([0, 0, w - 1, h - 1])
                             st.info(f"Using full image box: {prompt_box}")
                         
+                        # Prepare threshold parameters for auto_box_from_threshold mode
+                        threshold_kwargs = {}
+                        if prompt_mode == "auto_box_from_threshold" and threshold_params:
+                            threshold_kwargs = {
+                                'threshold_mode': threshold_params.get('threshold_mode', 'otsu'),
+                                'threshold_value': threshold_params.get('threshold_value', 0.5),
+                                'box_min_area': threshold_params.get('min_area', 100),
+                                'box_max_area': threshold_params.get('max_area', 100000),
+                                'box_dilation_radius': threshold_params.get('dilation_radius', 0)
+                            }
+                        
                         mask = st.session_state.predictor.predict(
                             image,
                             prompt_mode=prompt_mode,
                             multimask_output=multimask_output,
                             min_area_ratio=min_area_ratio,
-                            morph_kernel_size=morph_kernel_size
+                            morph_kernel_size=morph_kernel_size,
+                            **threshold_kwargs
                         )
                         
                         # Store mask directly (already at original image size)
