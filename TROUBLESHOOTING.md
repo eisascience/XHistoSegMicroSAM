@@ -6,6 +6,9 @@ This guide documents common installation and runtime issues encountered with XHi
 - [Python Version Requirements](#python-version-requirements)
 - [Installation Issues](#installation-issues)
 - [Runtime Issues](#runtime-issues)
+  - [Understanding Segmentation Modes](#understanding-segmentation-modes)
+  - [Empty Masks / No Segmentation Results](#empty-masks--no-segmentation-results)
+  - [Out of Memory (OOM) Errors](#out-of-memory-oom-errors)
 - [Model Download Issues](#model-download-issues)
 - [Performance Issues](#performance-issues)
 
@@ -183,6 +186,49 @@ Do NOT use uv or requirements-uv.txt. Use conda with Python 3.9 and `requirement
 
 ## Runtime Issues
 
+### Understanding Segmentation Modes
+
+XHistoSegMicroSAM supports multiple segmentation modes for different use cases:
+
+**1. `auto_box_from_threshold` (Recommended for Cell/Nuclei Segmentation)**
+- **Best for:** Segmenting individual cells or nuclei (100-1000+ objects)
+- **How it works:** 
+  - Threshold a specific channel (e.g., DAPI for nuclei)
+  - Detect connected components as individual objects
+  - Generate a bounding box for each object
+  - Use MicroSAM to segment each object precisely
+- **Memory considerations:** Can generate many boxes (500+), so use reduced batch size
+- **Configuration:**
+  ```bash
+  MICROSAM_BATCH_SIZE=8  # Adjust based on available memory
+  TILE_SHAPE=512,512     # Smaller tiles for better memory usage
+  ```
+
+**2. `auto_box` (For Tissue Region Detection)**
+- **Best for:** Detecting large tissue regions (1-10 regions)
+- **How it works:**
+  - Automatically detects tissue vs. background
+  - Creates bounding boxes around tissue regions
+  - Good for whole-slide images with multiple tissue sections
+- **Memory considerations:** Typically generates few boxes, minimal OOM risk
+- **Note:** This is NOT for cell-level segmentation
+
+**3. `full_box` (Process Entire Image)**
+- **Best for:** Single region covering the entire image
+- **How it works:** Uses the entire image as one bounding box
+- **Use case:** When you want to segment everything in the image as one object
+
+**4. `point` (Interactive Single Point)**
+- **Best for:** Interactive single-object segmentation
+- **How it works:** SAM finds the "most obvious" object near the clicked point
+- **Note:** Experimental mode, may select unexpectedly large regions
+
+**Choosing the Right Mode:**
+- Cell/nuclei counting → `auto_box_from_threshold` 
+- Tissue region detection → `auto_box`
+- Segment entire image → `full_box`
+- Interactive exploration → `point`
+
 ### Empty Masks / No Segmentation Results
 
 **Symptoms:**
@@ -217,33 +263,53 @@ Do NOT use uv or requirements-uv.txt. Use conda with Python 3.9 and `requirement
 ```
 RuntimeError: CUDA out of memory
 # OR
+RuntimeError: MPS backend out of memory (MPS allocated: 55.39 GB...)
+# OR
 Killed (process runs out of RAM)
 ```
 
+**Common Causes:**
+- Processing images with many objects (500+ nuclei/cells) generates too many bounding boxes
+- MPS (Apple Silicon GPU) memory accumulates without being cleared
+- Batch size too large for available memory
+- Tile size too large
+
 **Solutions:**
 
-1. **Enable tiling** (in .env):
+1. **Reduce tile size for better memory usage** (in .env):
    ```bash
    ENABLE_TILING=true
-   TILE_SHAPE=1024,1024
-   HALO_SIZE=256,256
+   TILE_SHAPE=512,512     # Reduced from 1024,1024
+   HALO_SIZE=128,128      # Reduced from 256,256
    ```
 
-2. **Use smaller model:**
+2. **Configure batch size** (in .env):
+   ```bash
+   MICROSAM_BATCH_SIZE=8  # Reduce to 4 if still getting OOM
+   ```
+   This controls how many bounding boxes are processed at once in `auto_box_from_threshold` mode.
+
+3. **Force CPU usage** (in .env) if GPU OOM persists:
+   ```bash
+   MICROSAM_DEVICE=cpu
+   ```
+   Note: This will be slower but more memory-stable.
+
+4. **Use smaller model:**
    ```bash
    MICROSAM_MODEL_TYPE=vit_b_histopathology  # instead of vit_l
    ```
 
-3. **Reduce image size:**
+5. **Reduce image size:**
    - Downsample large whole-slide images
    - Process regions of interest (ROI) instead of entire slide
 
-4. **Disable embeddings cache** (if enabled):
+6. **Disable embeddings cache** (if enabled):
    ```bash
    ENABLE_EMBEDDINGS_CACHE=false
    ```
 
-5. **Increase system swap:**
+7. **Increase system swap:**
    ```bash
    # Linux
    sudo fallocate -l 8G /swapfile
@@ -251,6 +317,11 @@ Killed (process runs out of RAM)
    sudo mkswap /swapfile
    sudo swapon /swapfile
    ```
+
+**Notes:**
+- MPS cache is automatically cleared before each prediction (as of this update)
+- For cell/nuclei segmentation with many objects, use `auto_box_from_threshold` mode with reduced batch size
+- The `auto_box` mode is for large tissue regions and typically doesn't cause OOM issues
 
 ### Slow Inference
 

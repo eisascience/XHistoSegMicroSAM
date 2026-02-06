@@ -2,12 +2,20 @@
 MicroSAM Adapter for XHaloPathAnalyzer
 
 Provides a MedSAM-compatible interface for MicroSAM to minimize changes to existing code.
+
+Memory Management Notes:
+- For images with many objects (500+), memory can be exhausted
+- Reduce TILE_SHAPE in .env (e.g., 512,512 or 256,256) 
+- Reduce MICROSAM_BATCH_SIZE in .env (e.g., 4 or 8)
+- Set MICROSAM_DEVICE=cpu in .env to avoid GPU OOM
+- MPS cache is automatically cleared before each prediction
 """
 
 import torch
 import numpy as np
 from typing import Optional, Tuple
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +59,18 @@ class MicroSAMPredictor:
         
         self.segmentation_mode = segmentation_mode
         self.device = device
+        
+        # Get batch size from environment or use default
+        try:
+            batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+            if batch_size < 1 or batch_size > 32:
+                logger.warning(f"MICROSAM_BATCH_SIZE={batch_size} is outside recommended range [1-32]. Using default 8.")
+                batch_size = 8
+            self.batch_size = batch_size
+        except (ValueError, TypeError):
+            logger.warning("Invalid MICROSAM_BATCH_SIZE value. Using default 8.")
+            self.batch_size = 8
+        logger.info(f"Using batch_size={self.batch_size}")
         
         # Initialize base MicroSAM predictor
         logger.info(f"Initializing MicroSAM (mode={segmentation_mode}, model={model_type})")
@@ -101,6 +121,14 @@ class MicroSAMPredictor:
             Binary mask (H, W) with 0=background, 255=foreground
             OR instance mask (H, W) with 0=background, 1..N=instances (if automatic mode or auto_box_from_threshold)
         """
+        # Clear MPS cache before prediction to prevent OOM on Apple Silicon
+        if self.predictor.device == "mps":
+            try:
+                torch.mps.empty_cache()
+                logger.debug("Cleared MPS cache before prediction")
+            except Exception as e:
+                logger.warning(f"Failed to clear MPS cache: {e}")
+        
         # Ensure RGB format
         image = self.predictor.ensure_rgb(image)
         h, w = image.shape[:2]

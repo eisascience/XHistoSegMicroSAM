@@ -3,6 +3,13 @@ MicroSAM Segmentation Module
 
 Provides integration with micro-sam for histopathology image segmentation.
 Supports both interactive prompted segmentation and automatic instance segmentation.
+
+Memory Management Notes:
+- For images with many objects (500+), memory can be exhausted
+- Reduce TILE_SHAPE in .env (e.g., 512,512 or 256,256) 
+- Reduce MICROSAM_BATCH_SIZE in .env (e.g., 4 or 8)
+- Set MICROSAM_DEVICE=cpu in .env to avoid GPU OOM
+- MPS cache is automatically cleared before each prediction
 """
 
 import torch
@@ -12,6 +19,7 @@ import logging
 from pathlib import Path
 import warnings
 import importlib.util
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +77,18 @@ class MicroSAMPredictor:
         self.tile_shape = tile_shape
         self.halo = halo
         
-        logger.info(f"Initializing MicroSAM with model={model_type}, device={self.device}")
+        # Get batch size from environment or use default with validation
+        try:
+            batch_size = int(os.getenv("MICROSAM_BATCH_SIZE", "8"))
+            if batch_size < 1 or batch_size > 32:
+                logger.warning(f"MICROSAM_BATCH_SIZE={batch_size} is outside recommended range [1-32]. Using default 8.")
+                batch_size = 8
+            self.batch_size = batch_size
+        except (ValueError, TypeError):
+            logger.warning("Invalid MICROSAM_BATCH_SIZE value. Using default 8.")
+            self.batch_size = 8
+        
+        logger.info(f"Initializing MicroSAM with model={model_type}, device={self.device}, batch_size={self.batch_size}")
         
         # Import micro_sam modules
         try:
@@ -220,6 +239,14 @@ class MicroSAMPredictor:
         """
         from micro_sam.inference import batched_inference
         
+        # Clear MPS cache before prediction to prevent OOM on Apple Silicon
+        if self.device == "mps":
+            try:
+                torch.mps.empty_cache()
+                logger.debug("Cleared MPS cache before prediction")
+            except Exception as e:
+                logger.warning(f"Failed to clear MPS cache: {e}")
+        
         # Ensure RGB format
         image = self.ensure_rgb(image)
         
@@ -237,7 +264,7 @@ class MicroSAMPredictor:
         kwargs = {
             "predictor": self.predictor,
             "image": image,
-            "batch_size": 1,
+            "batch_size": self.batch_size,
             "return_instance_segmentation": True
         }
         
@@ -321,6 +348,14 @@ class MicroSAMPredictor:
             )
         
         from micro_sam.instance_segmentation import get_instance_segmentation_generator
+        
+        # Clear MPS cache before prediction to prevent OOM on Apple Silicon
+        if self.device == "mps":
+            try:
+                torch.mps.empty_cache()
+                logger.debug("Cleared MPS cache before prediction")
+            except Exception as e:
+                logger.warning(f"Failed to clear MPS cache: {e}")
         
         # Ensure RGB format
         image = self.ensure_rgb(image)
