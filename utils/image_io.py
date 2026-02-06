@@ -86,6 +86,7 @@ def _load_tiff(image_bytes: bytes, filename: str) -> Dict:
             third_dim = data.shape[2]
             
             # Check if it's RGB (H, W, 3)
+            # RGB should have last dimension = 3 and first two dimensions large (typical image sizes)
             if third_dim == 3 and h > 16 and w > 16:
                 logger.info(f"Detected as RGB image (H,W,3): {data.shape}")
                 return {
@@ -102,6 +103,7 @@ def _load_tiff(image_bytes: bytes, filename: str) -> Dict:
                 }
             
             # Check if it's channels-first (C, H, W)
+            # First dimension should be small (number of channels), others large (image dimensions)
             elif data.shape[0] <= 16 and data.shape[1] > 16 and data.shape[2] > 16:
                 # Channels-first: (C, H, W)
                 n_channels = data.shape[0]
@@ -120,8 +122,8 @@ def _load_tiff(image_bytes: bytes, filename: str) -> Dict:
                     'shape_original': shape_original
                 }
             
-            # Check if it's channels-last (H, W, C)
-            elif data.shape[2] <= 16 and data.shape[0] > 16 and data.shape[1] > 16:
+            # Check if it's channels-last (H, W, C) where C is small but not 3
+            elif data.shape[2] <= 16 and data.shape[2] != 3 and data.shape[0] > 16 and data.shape[1] > 16:
                 # Channels-last: (H, W, C) -> transpose to (C, H, W)
                 n_channels = data.shape[2]
                 logger.info(f"Detected as channels-last (H,W,C): {data.shape}, transposing to (C,H,W)")
@@ -141,8 +143,24 @@ def _load_tiff(image_bytes: bytes, filename: str) -> Dict:
                 }
             
             else:
-                # Ambiguous case - assume RGB if third_dim == 3, otherwise channels-first
-                if third_dim == 3:
+                # Ambiguous case - use heuristics
+                # If first dimension is 3, treat as RGB if other dims are large
+                if data.shape[0] == 3 and data.shape[1] > 16 and data.shape[2] > 16:
+                    logger.warning(f"Ambiguous shape {data.shape}, treating as channels-first (C=3, H, W) -> multichannel")
+                    channel_names = [f"Ch {i}" for i in range(3)]
+                    return {
+                        'kind': 'multichannel',
+                        'data': data,
+                        'channels': data,
+                        'rgb': None,
+                        'grayscale': None,
+                        'channel_names': channel_names,
+                        'dtype': dtype_str,
+                        'vmin': vmin,
+                        'vmax': vmax,
+                        'shape_original': shape_original
+                    }
+                elif third_dim == 3:
                     logger.warning(f"Ambiguous shape {data.shape}, assuming RGB (H,W,3)")
                     return {
                         'kind': 'rgb',
