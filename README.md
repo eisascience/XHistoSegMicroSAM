@@ -93,12 +93,50 @@ MICROSAM_CACHEDIR=/path/to/cache
 streamlit run app.py
 ```
 
+### Segmentation Modes
+
+#### Prompt-Based Modes (Python 3.11 Compatible)
+
+The application supports several prompt-based segmentation modes that work without `python-elf`:
+
+1. **auto_box**: Automatically detects tissue region using thresholding and morphological operations
+2. **auto_box_from_threshold**: *(Recommended for nuclei/cell segmentation)*
+   - Generates bounding boxes from a thresholded channel (e.g., DAPI)
+   - Supports Otsu or manual thresholding
+   - Filters boxes by area (min/max size)
+   - Optional dilation to capture full nuclei
+   - Returns instance segmentation with unique IDs per nucleus
+3. **full_box**: Uses the entire image as the prompt box
+4. **point**: Uses point prompts (center point or user-specified)
+
+#### Automatic Instance Segmentation (Requires conda environment)
+
+Full automatic segmentation modes (APG/AIS) require `python-elf`, which is **not available in Python 3.11** due to numba/llvmlite constraints.
+
+**To use automatic modes:**
+
+```bash
+# Create conda environment with Python 3.9
+conda create -n microsam-auto python=3.9
+conda activate microsam-auto
+
+# Install python-elf from conda-forge
+conda install -c conda-forge python-elf
+
+# Install other dependencies
+pip install -r requirements.txt
+```
+
+For most use cases (especially nuclei/cell segmentation), the **auto_box_from_threshold** mode provides excellent results without requiring `python-elf`.
+
 ### Local Mode
 1. Select "Local Mode" in sidebar
 2. Upload image (PNG/JPG/TIFF)
-3. Choose Interactive or Automatic mode
-4. Run segmentation
-5. Download results
+3. Configure channel preprocessing if needed
+4. Choose prompt mode (auto_box_from_threshold recommended for nuclei)
+5. Adjust threshold and box filtering parameters
+6. Run segmentation
+7. Download results
 
 ### Halo Mode
 Configure Halo credentials in `.env` then connect through the UI.
@@ -129,10 +167,12 @@ MicroSAM models download automatically on first use:
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.8+ (Python 3.11 recommended for uv installation)
 - PyTorch 2.6.0
 - micro-sam >= 1.0.0
-- See requirements.txt for full list
+- See requirements.txt or requirements-uv.txt for full list
+
+**Note:** `python-elf` is NOT required for prompt-based segmentation modes. It is only needed for full automatic instance segmentation (APG/AIS modes) and requires Python <3.10 in a conda environment.
 
 ## License
 
