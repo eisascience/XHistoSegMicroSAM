@@ -1,0 +1,45 @@
+# ⚠️ DEPRECATED - DO NOT USE
+# 
+# This file does NOT work due to dependency conflicts:
+# - Designed for Python 3.11 with uv package manager
+# - Requires micro-sam v1.7.1 which has hard import of python-elf
+# - python-elf cannot be installed in Python 3.10+ due to numba/llvmlite constraints
+#
+# USE INSTEAD: requirements-py39.txt with Python 3.9 and conda
+# See setup.sh for complete installation instructions
+#
+# This file is kept for historical reference only.
+# ============================================================
+
+# Web
+streamlit>=1.28.0
+
+# GraphQL
+gql[all]>=3.4.1
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Image / WSI
+pillow>=10.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+matplotlib>=3.7.0
+scikit-image>=0.21.0
+
+# Large Image (IMPORTANT: avoid [all] to prevent mapnik dependency)
+large-image==1.33.5
+large-image-source-openslide==1.33.5
+
+# Geo / shapes
+geojson>=3.0.0
+shapely>=2.0.0
+
+# ML
+torch==2.6.0
+torchvision==0.21.0
+segment-anything>=1.0
+micro-sam @ git+https://github.com/computational-cell-analytics/micro-sam.git@v1.7.1
+zarr>=2.16.0
+
+# Utilities
+tqdm>=4.66.0
