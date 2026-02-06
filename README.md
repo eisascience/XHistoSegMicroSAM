@@ -47,8 +47,8 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 # Install dependencies
 uv pip install -r requirements-uv.txt
 
-# Verify micro-sam installation
-python -c "import micro_sam; print('micro_sam OK', micro_sam.__version__)"
+# Verify micro-sam and segment-anything installation
+python -c "import micro_sam; import segment_anything; print('OK')"
 
 # Optional: Set MicroSAM cache directory
 export MICROSAM_CACHEDIR="$PWD/.cache/microsam"

@@ -10,7 +10,7 @@ import os
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from utils.ml_models import _ensure_rgb_uint8, _compute_tissue_bbox
+from utils.medsam_models import _ensure_rgb_uint8, _compute_tissue_bbox
 
 
 class TestEnsureRGBUint8:
@@ -145,7 +145,7 @@ class TestMedSAMPredictorIntegration:
     def test_predictor_can_be_initialized(self):
         """Test that predictor can be initialized without checkpoint"""
         # This test just checks the class can be imported and structure is correct
-        from utils.ml_models import MedSAMPredictor
+        from utils.medsam_models import MedSAMPredictor
         
         # Check class has required methods
         assert hasattr(MedSAMPredictor, '__init__')
@@ -155,7 +155,7 @@ class TestMedSAMPredictorIntegration:
     
     def test_predict_signature(self):
         """Test that predict method has correct signature"""
-        from utils.ml_models import MedSAMPredictor
+        from utils.medsam_models import MedSAMPredictor
         import inspect
         
         sig = inspect.signature(MedSAMPredictor.predict)

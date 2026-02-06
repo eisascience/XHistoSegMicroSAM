@@ -120,7 +120,7 @@ class MicroSAMPredictor:
                 
             elif prompt_mode == "auto_box":
                 # Auto-detect tissue region
-                from utils.ml_models import _compute_tissue_bbox
+                from utils.medsam_models import _compute_tissue_bbox
                 auto_box = _compute_tissue_bbox(image, min_area_ratio, morph_kernel_size)
                 boxes_prompt = np.array([auto_box])  # Shape (1, 4)
                 logger.info(f"Auto-detected tissue box: {auto_box}")
@@ -171,7 +171,7 @@ class MicroSAMPredictor:
 # For backward compatibility, also export helper functions
 def _ensure_rgb_uint8(image: np.ndarray) -> np.ndarray:
     """Ensure image is RGB uint8 format."""
-    from utils.ml_models import _ensure_rgb_uint8 as original_ensure_rgb
+    from utils.medsam_models import _ensure_rgb_uint8 as original_ensure_rgb
     return original_ensure_rgb(image)
 
 
@@ -181,5 +181,5 @@ def _compute_tissue_bbox(
     morph_kernel_size: int = 5
 ) -> np.ndarray:
     """Compute tissue bounding box."""
-    from utils.ml_models import _compute_tissue_bbox as original_compute_bbox
+    from utils.medsam_models import _compute_tissue_bbox as original_compute_bbox
     return original_compute_bbox(image, min_area_ratio, morph_kernel_size)
