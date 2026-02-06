@@ -218,13 +218,19 @@ class MicroSAMPredictor:
         Returns:
             Instance segmentation mask (H, W) with 0=background, 1..N=instance IDs
         """
-        from micro_sam.inference import batched_inference, batched_tiled_inference
+        from micro_sam.inference import batched_inference
         
         # Ensure RGB format
         image = self.ensure_rgb(image)
         
-        # Select inference function
-        inference_fn = batched_tiled_inference if tiled else batched_inference
+        # Note: batched_tiled_inference doesn't exist in v1.3.0
+        # Always use batched_inference regardless of tiled parameter
+        if tiled:
+            logger.warning(
+                "Tiled inference requested but not available in micro-sam v1.3.0. "
+                "Using batched_inference instead (may be slower for large images)."
+            )
+        inference_fn = batched_inference
         
         # Prepare kwargs
         kwargs = {
