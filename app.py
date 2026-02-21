@@ -19,6 +19,9 @@ from pathlib import Path
 import pandas as pd
 from datetime import datetime
 import traceback
+import hashlib
+import tempfile
+import os
 
 from config import Config
 from utils.halo_api import HaloAPI
@@ -147,6 +150,9 @@ def init_session_state():
         st.session_state.pipeline_mode = False  # Toggle between classic and pipeline mode
     if 'pipeline_results' not in st.session_state:
         st.session_state.pipeline_results = None
+    # Channel config persistence
+    if 'channel_config_save_dir' not in st.session_state:
+        st.session_state.channel_config_save_dir = None  # None = use temp dir
 
 init_session_state()
 
@@ -851,8 +857,14 @@ def image_upload_page():
                     'error': None,
                     'result': None,
                     'include': True,  # Whether to include in batch processing
-                    # Channel configuration will be set in channels page
+                    # Channel configuration (legacy single dict, kept for backward compat)
                     'channel_config': None,
+                    # Per-channel preprocessing configs keyed by channel index (multichannel)
+                    'channel_configs_by_index': {},
+                    # User-defined channel names for multichannel TIFFs
+                    'channel_names': None,
+                    # Selected channel index for multichannel navigation
+                    'selected_channel_idx': 0,
                     'processed_input': None  # Processed input for MicroSAM
                 })
         
@@ -1004,73 +1016,309 @@ def image_upload_page():
             st.session_state.images = []
 
 
+def _default_channel_preprocessing_config():
+    """Return a fresh default preprocessing config dict for a single channel."""
+    return {
+        'use_normalization': True,
+        'percentile_low': 1.0,
+        'percentile_high': 99.0,
+        'threshold_mode': 'off',  # off, manual, otsu
+        'threshold_value': 128,
+        'threshold_type': 'binary',  # binary, masked
+        'smoothing_sigma': 0.0
+    }
+
+
+def _get_config_save_dir() -> Path:
+    """Return the active config save directory, creating a temp dir if needed."""
+    user_dir = st.session_state.get('channel_config_save_dir')
+    if user_dir:
+        p = Path(user_dir)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception as e:
+            logger.warning(f"Could not create config directory '{p}': {e}. Falling back to temp dir.")
+            st.warning(f"Could not use directory '{p}': {e}. Using a temporary directory instead.")
+    # Fall back to session-scoped temp dir
+    if 'channel_config_tmp_dir' not in st.session_state:
+        st.session_state.channel_config_tmp_dir = tempfile.mkdtemp(prefix='xhisto_channel_config_')
+    return Path(st.session_state.channel_config_tmp_dir)
+
+
+def _config_filename(image_name: str) -> str:
+    """Deterministic config filename: <name>.<hash>.xhisto_channel_config.json"""
+    h = hashlib.sha256(image_name.encode()).hexdigest()[:8]
+    return f"{image_name}.{h}.xhisto_channel_config.json"
+
+
+def _build_channel_config_json(item: dict) -> dict:
+    """Serialise channel names and per-channel preprocessing configs to a dict."""
+    img_info = item.get('img_info', {})
+    n_channels = 0
+    if img_info and img_info.get('kind') == 'multichannel':
+        n_channels = img_info['channels'].shape[0]
+    return {
+        'original_filename': item.get('name', ''),
+        'channel_count': n_channels,
+        'channel_names': item.get('channel_names') or [],
+        'channel_configs_by_index': {
+            str(k): v for k, v in (item.get('channel_configs_by_index') or {}).items()
+        },
+        'timestamp': datetime.now().isoformat(),
+        'app_version': '1.0'
+    }
+
+
+def _apply_channel_config_json(item: dict, cfg: dict) -> list:
+    """Apply loaded config dict to an item.  Returns list of warning strings."""
+    warnings = []
+    img_info = item.get('img_info', {})
+    if img_info and img_info.get('kind') == 'multichannel':
+        n_channels = img_info['channels'].shape[0]
+        saved_n = cfg.get('channel_count', 0)
+        if saved_n and saved_n != n_channels:
+            warnings.append(
+                f"Channel count mismatch: config has {saved_n}, image has {n_channels}. "
+                "Applying overlapping indices only."
+            )
+        # Apply channel names
+        saved_names = cfg.get('channel_names', [])
+        if saved_names:
+            merged = list(img_info['channel_names'])  # start from img_info defaults
+            for idx, name in enumerate(saved_names):
+                if idx < len(merged):
+                    merged[idx] = name
+            item['channel_names'] = merged
+        # Apply per-channel preprocessing
+        saved_cfgs = cfg.get('channel_configs_by_index', {})
+        if 'channel_configs_by_index' not in item or item['channel_configs_by_index'] is None:
+            item['channel_configs_by_index'] = {}
+        for k_str, v in saved_cfgs.items():
+            try:
+                k = int(k_str)
+            except ValueError:
+                continue
+            if k < n_channels:
+                item['channel_configs_by_index'][k] = v
+    return warnings
+
+
 def channels_page():
     """Channel inspection and configuration page with multi-channel TIFF support"""
     st.title("Channels")
-    
-    st.markdown("""
-    Preview individual color channels and configure which channels to use for MicroSAM analysis.
-    Multi-channel TIFFs are fully supported with per-channel preprocessing.
-    """)
-    
+
+    st.markdown(
+        "Preview individual color channels and configure which channels to use for MicroSAM analysis. "
+        "Multi-channel TIFFs support inline renaming and per-channel preprocessing."
+    )
+
     # Check if we have images
     if not st.session_state.images:
         st.warning("Please upload images first in the Image Upload tab")
         return
-    
+
     from utils.image_io import normalize_to_uint8, apply_threshold, apply_gaussian_smooth
     from skimage.filters import threshold_otsu
-    
+
+    # --- Config save directory ---
     st.markdown("---")
-    
+    st.subheader("Config Save Directory")
+    col_dir1, col_dir2 = st.columns([3, 1])
+    with col_dir1:
+        user_dir_input = st.text_input(
+            "Config save directory (leave empty to use a per-session temp directory)",
+            value=st.session_state.get('channel_config_save_dir') or '',
+            key='channel_config_save_dir_input',
+            help="Paste a filesystem path. Channel configs will be saved/loaded here as JSON files."
+        )
+    with col_dir2:
+        if st.button("Apply directory", key='apply_config_dir'):
+            st.session_state.channel_config_save_dir = user_dir_input.strip() or None
+            st.rerun()
+
+    active_dir = _get_config_save_dir()
+    dir_writable = os.access(str(active_dir), os.W_OK) if active_dir.exists() else False
+    st.caption(
+        f"Active directory: `{active_dir}` — "
+        + ("writable" if dir_writable else "not writable or does not exist")
+    )
+
+    st.markdown("---")
+
+    # --- Apply-to-all convenience ---
+    if len(st.session_state.images) > 1:
+        with st.expander("Apply current image settings to all images"):
+            source_names = [img['name'] for img in st.session_state.images]
+            source_sel = st.selectbox(
+                "Source image",
+                source_names,
+                key='apply_all_source'
+            )
+            if st.button("Apply to all images with matching channel count", key='apply_all_btn'):
+                src = next((img for img in st.session_state.images if img['name'] == source_sel), None)
+                if src:
+                    src_info = src.get('img_info', {})
+                    if src_info and src_info.get('kind') == 'multichannel':
+                        src_n = src_info['channels'].shape[0]
+                        applied = 0
+                        for tgt in st.session_state.images:
+                            if tgt is src:
+                                continue
+                            tgt_info = tgt.get('img_info', {})
+                            if tgt_info and tgt_info.get('kind') == 'multichannel':
+                                tgt_n = tgt_info['channels'].shape[0]
+                                # Resolve source channel names with explicit None check
+                                src_names_list = (src['channel_names'] if src.get('channel_names') is not None
+                                                  else list(src_info['channel_names']))
+                                if tgt_n == src_n:
+                                    tgt['channel_names'] = list(src_names_list)
+                                    tgt['channel_configs_by_index'] = {
+                                        k: dict(v) for k, v in (src.get('channel_configs_by_index') or {}).items()
+                                    }
+                                    applied += 1
+                                else:
+                                    # Apply overlapping indices, warn
+                                    overlap = min(src_n, tgt_n)
+                                    tgt_names_list = list(
+                                        tgt['channel_names'] if tgt.get('channel_names') is not None
+                                        else tgt_info['channel_names']
+                                    )
+                                    for idx in range(overlap):
+                                        tgt_names_list[idx] = src_names_list[idx]
+                                    tgt['channel_names'] = tgt_names_list
+                                    src_cfgs = src.get('channel_configs_by_index') or {}
+                                    tgt_cfgs = tgt.get('channel_configs_by_index') or {}
+                                    for k, v in src_cfgs.items():
+                                        if int(k) < tgt_n:
+                                            tgt_cfgs[k] = dict(v)
+                                    tgt['channel_configs_by_index'] = tgt_cfgs
+                                    applied += 1
+                                    st.warning(
+                                        f"{tgt['name']}: channel count differs ({tgt_n} vs {src_n}); "
+                                        "applied overlapping indices only."
+                                    )
+                        st.success(f"Applied settings to {applied} image(s).")
+                    else:
+                        st.info("Apply-to-all is only available for multichannel TIFF source images.")
+
+    st.markdown("---")
+
     # Display channel info for each image
     for i, item in enumerate(st.session_state.images):
+        img_info = item.get('img_info')
+
+        # Ensure new fields exist (backward compat for items added before this version)
+        if 'channel_configs_by_index' not in item or item['channel_configs_by_index'] is None:
+            item['channel_configs_by_index'] = {}
+        if 'channel_names' not in item:
+            item['channel_names'] = None
+        if 'selected_channel_idx' not in item:
+            item['selected_channel_idx'] = 0
+
         with st.expander(f"{i+1}. {item['name']}", expanded=(i == 0)):
-            img_info = item.get('img_info')
-            
             if not img_info:
                 st.error("Image metadata not found. Please re-upload the image.")
                 continue
-            
+
             # Display image information
             st.write(f"**Image Type:** {img_info['kind']}")
             st.write(f"**Shape:** {img_info['shape_original']}")
             st.write(f"**Data Type:** {img_info['dtype']}")
             st.write(f"**Value Range:** [{img_info['vmin']:.2f}, {img_info['vmax']:.2f}]")
-            
-            # Initialize channel config if not present
+
+            # --- Config save/load controls ---
+            st.markdown("---")
+            st.write("**Config Save / Load**")
+            col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
+
+            cfg_filename = _config_filename(item['name'])
+            cfg_path = active_dir / cfg_filename
+
+            with col_cfg1:
+                if st.button("Save config to directory", key=f"cfg_save_{i}"):
+                    try:
+                        cfg_json = _build_channel_config_json(item)
+                        cfg_path.write_text(json.dumps(cfg_json, indent=2))
+                        st.success(f"Saved to {cfg_path}")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+
+            with col_cfg2:
+                if cfg_path.exists():
+                    if st.button("Load config from directory", key=f"cfg_load_{i}"):
+                        try:
+                            cfg_json = json.loads(cfg_path.read_text())
+                            warns = _apply_channel_config_json(item, cfg_json)
+                            for w in warns:
+                                st.warning(w)
+                            st.success("Config loaded.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Load failed: {e}")
+                else:
+                    st.caption("No saved config found in directory")
+
+            with col_cfg3:
+                # Download config JSON
+                cfg_json_bytes = json.dumps(_build_channel_config_json(item), indent=2).encode()
+                st.download_button(
+                    "Download config JSON",
+                    data=cfg_json_bytes,
+                    file_name=cfg_filename,
+                    mime="application/json",
+                    key=f"cfg_download_{i}"
+                )
+
+            with col_cfg4:
+                uploaded_cfg = st.file_uploader(
+                    "Upload config JSON",
+                    type=["json"],
+                    key=f"cfg_upload_{i}",
+                    label_visibility="collapsed"
+                )
+                if uploaded_cfg is not None:
+                    try:
+                        cfg_json = json.loads(uploaded_cfg.read())
+                        warns = _apply_channel_config_json(item, cfg_json)
+                        for w in warns:
+                            st.warning(w)
+                        st.success("Config applied from upload.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Upload apply failed: {e}")
+
+            st.markdown("---")
+
+            # Initialize channel config (legacy, kept for backward compatibility with non-multichannel paths)
             if 'channel_config' not in item or item['channel_config'] is None:
                 item['channel_config'] = {
                     'selected_channel': 0,
                     'use_normalization': True,
                     'percentile_low': 1.0,
                     'percentile_high': 99.0,
-                    'threshold_mode': 'off',  # off, manual, otsu
+                    'threshold_mode': 'off',
                     'threshold_value': 128,
-                    'threshold_type': 'binary',  # binary, masked
+                    'threshold_type': 'binary',
                     'smoothing_sigma': 0.0
                 }
-            
-            config = item['channel_config']
-            
-            st.markdown("---")
-            
-            # Channel Previews Section
+            config_legacy = item['channel_config']
+
+            # ---- Channel Previews ----
             st.write("**Channel Previews**")
-            
+
             if img_info['kind'] == 'rgb':
                 # RGB image - show RGB composite and R, G, B channels
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.image(img_info['rgb'], caption="RGB Composite", use_container_width=True)
                 with col2:
-                    st.image(img_info['rgb'][:,:,0], caption="R Channel", use_container_width=True, clamp=True)
+                    st.image(img_info['rgb'][:, :, 0], caption="R Channel", use_container_width=True, clamp=True)
                 with col3:
-                    st.image(img_info['rgb'][:,:,1], caption="G Channel", use_container_width=True, clamp=True)
+                    st.image(img_info['rgb'][:, :, 1], caption="G Channel", use_container_width=True, clamp=True)
                 with col4:
-                    st.image(img_info['rgb'][:,:,2], caption="B Channel", use_container_width=True, clamp=True)
-                
-                # For RGB, allow selection of single channel or use all
+                    st.image(img_info['rgb'][:, :, 2], caption="B Channel", use_container_width=True, clamp=True)
+
                 st.write("**Channel Selection**")
                 channel_mode = st.radio(
                     "Mode",
@@ -1079,33 +1327,65 @@ def channels_page():
                     key=f"rgb_mode_{i}",
                     horizontal=True
                 )
-                
+
                 if channel_mode == 'single':
-                    config['selected_channel'] = st.radio(
-                        "Select Channel",
-                        options=[0, 1, 2],
-                        format_func=lambda x: ['R', 'G', 'B'][x],
-                        key=f"rgb_ch_sel_{i}",
-                        horizontal=True
-                    )
+                    # Prev / Next navigation for RGB single-channel mode
+                    rgb_labels = ['R', 'G', 'B']
+                    cur_rgb_idx = int(item.get('selected_channel_idx') or 0) % 3
+                    col_prev, col_sel, col_next = st.columns([1, 3, 1])
+                    with col_prev:
+                        if st.button("Prev", key=f"rgb_prev_{i}"):
+                            item['selected_channel_idx'] = (cur_rgb_idx - 1) % 3
+                            st.rerun()
+                    with col_next:
+                        if st.button("Next", key=f"rgb_next_{i}"):
+                            item['selected_channel_idx'] = (cur_rgb_idx + 1) % 3
+                            st.rerun()
+                    with col_sel:
+                        new_rgb_idx = st.radio(
+                            "Select Channel",
+                            options=[0, 1, 2],
+                            index=cur_rgb_idx,
+                            format_func=lambda x: rgb_labels[x],
+                            key=f"rgb_ch_sel_{i}",
+                            horizontal=True
+                        )
+                    if new_rgb_idx != cur_rgb_idx:
+                        item['selected_channel_idx'] = new_rgb_idx
+                    config_legacy['selected_channel'] = item['selected_channel_idx']
                 else:
-                    config['selected_channel'] = None  # Use RGB
-            
+                    config_legacy['selected_channel'] = None  # Use RGB
+
             elif img_info['kind'] == 'grayscale':
-                # Grayscale image - just show it
-                st.image(normalize_to_uint8(img_info['grayscale']), 
-                        caption="Grayscale Image", use_container_width=True)
-                config['selected_channel'] = 0
-            
+                st.image(normalize_to_uint8(img_info['grayscale']),
+                         caption="Grayscale Image", use_container_width=True)
+                config_legacy['selected_channel'] = 0
+
             elif img_info['kind'] == 'multichannel':
-                # Multi-channel image - show grid of all channels
                 n_channels = img_info['channels'].shape[0]
                 st.write(f"**{n_channels} channels detected**")
-                
-                # Show thumbnails in a grid (up to 4 columns)
+
+                # Resolve channel names (user-defined overrides img_info defaults)
+                if item['channel_names'] is None or len(item['channel_names']) != n_channels:
+                    item['channel_names'] = list(img_info['channel_names'])
+                ch_names = item['channel_names']
+
+                # --- Inline channel renaming ---
+                st.write("**Rename Channels** (optional, changes propagate across the app)")
+                rename_cols = st.columns(min(4, n_channels))
+                for ch_idx in range(n_channels):
+                    with rename_cols[ch_idx % len(rename_cols)]:
+                        new_name = st.text_input(
+                            f"Channel {ch_idx} name",
+                            value=ch_names[ch_idx],
+                            key=f"ch_rename_{i}_{ch_idx}"
+                        )
+                        if new_name != ch_names[ch_idx]:
+                            ch_names[ch_idx] = new_name
+
+                # Show channel thumbnails with updated names
                 n_cols = min(4, n_channels)
                 n_rows = (n_channels + n_cols - 1) // n_cols
-                
                 for row in range(n_rows):
                     cols = st.columns(n_cols)
                     for col_idx in range(n_cols):
@@ -1114,54 +1394,85 @@ def channels_page():
                             with cols[col_idx]:
                                 ch_data = img_info['channels'][ch_idx]
                                 ch_preview = normalize_to_uint8(ch_data)
-                                st.image(ch_preview, 
-                                       caption=img_info['channel_names'][ch_idx], 
-                                       use_container_width=True)
-                
-                # Channel selection
+                                st.image(ch_preview, caption=ch_names[ch_idx], use_container_width=True)
+
+                # --- Channel Selection with Prev / Next ---
                 st.write("**Channel Selection**")
-                config['selected_channel'] = st.selectbox(
-                    "Select channel for analysis",
-                    options=list(range(n_channels)),
-                    format_func=lambda x: img_info['channel_names'][x],
-                    key=f"multi_ch_sel_{i}"
-                )
-            
+                cur_ch = int(item.get('selected_channel_idx') or 0)
+                if cur_ch >= n_channels:
+                    cur_ch = 0
+                    item['selected_channel_idx'] = 0
+
+                col_prev, col_sel, col_next = st.columns([1, 3, 1])
+                with col_prev:
+                    if st.button("Prev", key=f"multi_prev_{i}"):
+                        item['selected_channel_idx'] = (cur_ch - 1) % n_channels
+                        st.rerun()
+                with col_next:
+                    if st.button("Next", key=f"multi_next_{i}"):
+                        item['selected_channel_idx'] = (cur_ch + 1) % n_channels
+                        st.rerun()
+                with col_sel:
+                    new_ch = st.selectbox(
+                        "Select channel for analysis",
+                        options=list(range(n_channels)),
+                        index=cur_ch,
+                        format_func=lambda x: ch_names[x],
+                        key=f"multi_ch_sel_{i}"
+                    )
+                if new_ch != cur_ch:
+                    item['selected_channel_idx'] = new_ch
+                    cur_ch = new_ch
+
+                config_legacy['selected_channel'] = cur_ch
+
             st.markdown("---")
-            
-            # Preprocessing Controls
+
+            # ---- Preprocessing Controls ----
             st.write("**Preprocessing for Analysis**")
-            
+
+            # Determine the active preprocessing config
+            if img_info['kind'] == 'multichannel':
+                ch_idx_for_pp = int(item.get('selected_channel_idx') or 0)
+                pp_configs = item['channel_configs_by_index']
+                if ch_idx_for_pp not in pp_configs:
+                    pp_configs[ch_idx_for_pp] = _default_channel_preprocessing_config()
+                config = pp_configs[ch_idx_for_pp]
+                st.caption(
+                    f"Editing preprocessing for channel {ch_idx_for_pp}: "
+                    f"{item['channel_names'][ch_idx_for_pp] if item.get('channel_names') else f'Ch {ch_idx_for_pp}'}"
+                )
+            else:
+                # For RGB/grayscale continue using legacy single config
+                config = config_legacy
+
             # Get the selected channel data
             if img_info['kind'] == 'rgb':
-                if config.get('selected_channel') is None:
-                    # Use RGB composite
+                if config_legacy.get('selected_channel') is None:
                     selected_data = img_info['rgb'].astype(np.float32)
                     is_multichannel_data = True
                 else:
-                    # Use single channel from RGB
-                    selected_data = img_info['rgb'][:,:,config['selected_channel']].astype(np.float32)
+                    selected_data = img_info['rgb'][:, :, config_legacy['selected_channel']].astype(np.float32)
                     is_multichannel_data = False
             elif img_info['kind'] == 'grayscale':
                 selected_data = img_info['grayscale'].astype(np.float32)
                 is_multichannel_data = False
             elif img_info['kind'] == 'multichannel':
-                selected_data = img_info['channels'][config['selected_channel']].astype(np.float32)
+                selected_data = img_info['channels'][config_legacy['selected_channel']].astype(np.float32)
                 is_multichannel_data = False
             else:
                 st.error(f"Unknown image kind: {img_info['kind']}")
                 continue
-            
+
             col_pp1, col_pp2 = st.columns(2)
-            
+
             with col_pp1:
-                # Normalization
                 config['use_normalization'] = st.checkbox(
                     "Normalize (percentile clip + scale to 0-255)",
-                    value=config['use_normalization'],
-                    key=f"norm_{i}"
+                    value=config.get('use_normalization', True),
+                    key=f"norm_{i}_{config_legacy.get('selected_channel', 'rgb')}"
                 )
-                
+
                 if config['use_normalization']:
                     col_p1, col_p2 = st.columns(2)
                     with col_p1:
@@ -1169,129 +1480,141 @@ def channels_page():
                             "Low percentile",
                             min_value=0.0,
                             max_value=10.0,
-                            value=config['percentile_low'],
+                            value=float(config.get('percentile_low', 1.0)),
                             step=0.1,
-                            key=f"p_low_{i}"
+                            key=f"p_low_{i}_{config_legacy.get('selected_channel', 'rgb')}"
                         )
                     with col_p2:
                         config['percentile_high'] = st.slider(
                             "High percentile",
                             min_value=90.0,
                             max_value=100.0,
-                            value=config['percentile_high'],
+                            value=float(config.get('percentile_high', 99.0)),
                             step=0.1,
-                            key=f"p_high_{i}"
+                            key=f"p_high_{i}_{config_legacy.get('selected_channel', 'rgb')}"
                         )
-            
+
             with col_pp2:
-                # Smoothing
                 config['smoothing_sigma'] = st.slider(
                     "Gaussian smoothing (sigma)",
                     min_value=0.0,
                     max_value=3.0,
-                    value=config['smoothing_sigma'],
+                    value=float(config.get('smoothing_sigma', 0.0)),
                     step=0.1,
-                    key=f"smooth_{i}",
+                    key=f"smooth_{i}_{config_legacy.get('selected_channel', 'rgb')}",
                     help="0 = no smoothing"
                 )
-            
+
             # Thresholding (only for single-channel data)
             if not is_multichannel_data:
                 st.write("**Thresholding** (optional)")
                 config['threshold_mode'] = st.radio(
                     "Threshold Mode",
                     options=['off', 'manual', 'otsu'],
+                    index=['off', 'manual', 'otsu'].index(config.get('threshold_mode', 'off')),
                     format_func=lambda x: {'off': 'Off', 'manual': 'Manual', 'otsu': 'Otsu Auto'}.get(x, x),
-                    key=f"thresh_mode_{i}",
+                    key=f"thresh_mode_{i}_{config_legacy.get('selected_channel', 'rgb')}",
                     horizontal=True
                 )
-                
+
                 if config['threshold_mode'] != 'off':
                     config['threshold_type'] = st.radio(
                         "Threshold Type",
                         options=['binary', 'masked'],
+                        index=['binary', 'masked'].index(config.get('threshold_type', 'binary')),
                         format_func=lambda x: 'Binary Mask' if x == 'binary' else 'Masked Intensity',
-                        key=f"thresh_type_{i}",
+                        key=f"thresh_type_{i}_{config_legacy.get('selected_channel', 'rgb')}",
                         horizontal=True
                     )
-                    
+
                     if config['threshold_mode'] == 'manual':
                         config['threshold_value'] = st.slider(
                             "Threshold Value",
                             min_value=0,
                             max_value=255,
-                            value=int(config['threshold_value']),
-                            key=f"thresh_val_{i}"
+                            value=int(config.get('threshold_value', 128)),
+                            key=f"thresh_val_{i}_{config_legacy.get('selected_channel', 'rgb')}"
                         )
-            
-            # Build processed preview
+
+            # ---- Processed Preview ----
             st.markdown("---")
             st.write("**Processed Preview**")
-            
+
             if is_multichannel_data:
-                # For RGB composite, just apply normalization and smoothing
                 processed = selected_data.copy()
                 if config['use_normalization']:
-                    # Normalize each channel independently
                     processed_ch = []
                     for ch in range(3):
-                        ch_data = processed[:,:,ch]
-                        ch_norm = normalize_to_uint8(ch_data, 
-                                                    percentile_clip=(config['percentile_low'], 
-                                                                   config['percentile_high']))
+                        ch_data = processed[:, :, ch]
+                        ch_norm = normalize_to_uint8(
+                            ch_data,
+                            percentile_clip=(config['percentile_low'], config['percentile_high'])
+                        )
                         processed_ch.append(ch_norm)
                     processed = np.stack(processed_ch, axis=2)
-                
-                if config['smoothing_sigma'] > 0:
+
+                if config.get('smoothing_sigma', 0.0) > 0:
                     for ch in range(3):
-                        processed[:,:,ch] = apply_gaussian_smooth(processed[:,:,ch], config['smoothing_sigma'])
-                
-                # This will be the model input
+                        processed[:, :, ch] = apply_gaussian_smooth(processed[:, :, ch], config['smoothing_sigma'])
+
                 model_input = processed.astype(np.uint8)
                 st.image(model_input, caption="Processed RGB Input for MicroSAM", use_container_width=True)
-            
+
             else:
-                # Single-channel processing
                 processed = selected_data.copy()
-                
-                # Normalization
+
                 if config['use_normalization']:
-                    processed = normalize_to_uint8(processed, 
-                                                  percentile_clip=(config['percentile_low'], 
-                                                                 config['percentile_high']))
+                    processed = normalize_to_uint8(
+                        processed,
+                        percentile_clip=(config['percentile_low'], config['percentile_high'])
+                    )
                 else:
-                    # Just clip to 0-255 range
                     processed = np.clip(processed, 0, 255).astype(np.uint8)
-                
-                # Smoothing
-                if config['smoothing_sigma'] > 0:
+
+                if config.get('smoothing_sigma', 0.0) > 0:
                     processed = apply_gaussian_smooth(processed, config['smoothing_sigma'])
-                
-                # Thresholding
-                if config['threshold_mode'] == 'manual':
+
+                if config.get('threshold_mode') == 'manual':
                     processed = apply_threshold(processed, config['threshold_value'], config['threshold_type'])
-                elif config['threshold_mode'] == 'otsu':
+                elif config.get('threshold_mode') == 'otsu':
                     try:
                         thresh_val = threshold_otsu(processed.astype(np.uint8))
                         processed = apply_threshold(processed, thresh_val, config['threshold_type'])
                         st.info(f"Otsu threshold: {thresh_val:.1f}")
                     except Exception as e:
                         st.warning(f"Otsu thresholding failed: {e}")
-                
-                # Convert to uint8
+
                 processed = processed.astype(np.uint8)
-                
-                # Show preview
-                st.image(processed, caption="Processed Channel", use_container_width=True)
-                
-                # Replicate to 3 channels for model input
+
+                # Determine caption with channel name
+                if img_info['kind'] == 'multichannel' and item.get('channel_names'):
+                    ch_caption = item['channel_names'][config_legacy['selected_channel']]
+                elif img_info['kind'] == 'rgb' and config_legacy.get('selected_channel') is not None:
+                    ch_caption = ['R', 'G', 'B'][config_legacy['selected_channel']]
+                else:
+                    ch_caption = "Channel"
+                st.image(processed, caption=f"Processed: {ch_caption}", use_container_width=True)
+
                 model_input = np.stack([processed, processed, processed], axis=2)
                 st.info("This channel will be replicated to RGB (3 channels) for MicroSAM input")
-            
+
             # Store the processed input for analysis
             item['processed_input'] = model_input
-            st.success(f"✓ Configuration saved for {item['name']}")
-    
+
+            # Debug/verification toggle
+            with st.expander("Debug: MicroSAM input verification"):
+                st.write("The processed image above is passed as model input (not raw channel data).")
+                if model_input is not None:
+                    st.write(f"- Shape: `{model_input.shape}`")
+                    st.write(f"- dtype: `{model_input.dtype}`")
+                    st.write(f"- min: `{int(model_input.min())}`, max: `{int(model_input.max())}`")
+                    if img_info['kind'] == 'multichannel' and item.get('channel_names'):
+                        sel_name = item['channel_names'][config_legacy['selected_channel']]
+                        st.write(f"- Selected channel: `{sel_name}` (index {config_legacy['selected_channel']})")
+                    st.write("Processed input confirmed.")
+
+            st.success(f"Configuration saved for {item['name']}")
+
     st.markdown("---")
     st.info("Go to **MicroSAM Analysis** tab to process your configured images")
 
@@ -1413,15 +1736,17 @@ def pipeline_analysis_page():
                 else:
                     image = load_image_from_bytes(selected_item['bytes'])
                 
-                # Extract channels from image
-                # For now, create a simple channel dictionary
-                # In a real implementation, this would use the channel configuration
+                # Build channel dictionary using user-defined channel names when available
                 channels = {}
+                user_ch_names = selected_item.get('channel_names')
                 if image.ndim == 2:
-                    channels['Channel_0'] = image
+                    label = (user_ch_names[0] if user_ch_names else 'Channel_0')
+                    channels[label] = image
                 elif image.ndim == 3:
-                    for i in range(min(image.shape[2], 5)):
-                        channels[f'Channel_{i}'] = image[:, :, i]
+                    for idx in range(min(image.shape[2], 5)):
+                        label = (user_ch_names[idx] if user_ch_names and idx < len(user_ch_names)
+                                 else f'Channel_{idx}')
+                        channels[label] = image[:, :, idx]
                 
                 # Validate channels
                 if not pipeline.validate_channels(list(channels.keys())):
@@ -1857,6 +2182,14 @@ def classic_analysis_page():
                 if item['status'] == 'done' and item['result']:
                     # Display results
                     result = item['result']
+
+                    # Show which channel was used (if multichannel)
+                    img_info = item.get('img_info')
+                    if (img_info and img_info.get('kind') == 'multichannel'
+                            and item.get('channel_names') is not None):
+                        sel_idx = item.get('selected_channel_idx', 0)
+                        sel_name = item['channel_names'][sel_idx]
+                        st.caption(f"Results for channel: {sel_name} (index {sel_idx})")
                     
                     # Statistics
                     st.write("**Statistics**")
