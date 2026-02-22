@@ -38,7 +38,7 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
     required_channels = ['nucleus']
     optional_channels = ['cell_marker', 'signal']
     
-    def configure_ui(self, st):
+    def configure_ui(self, st, available_channels=None):
         """Configure channel assignments and parameters"""
         
         config = {}
@@ -46,21 +46,26 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
         st.write("### Channel Assignment")
         st.write("Assign roles to your image channels")
         
-        # This would be populated from actual image channels
-        # For now, placeholder
+        # Use the actual channel names from the loaded image when available,
+        # falling back to generic placeholders.
+        if available_channels:
+            ch_options = list(available_channels)
+        else:
+            ch_options = [f'Channel_{i}' for i in range(5)]
+        
         config['nucleus_channel'] = st.selectbox(
             "Nucleus Channel (e.g., DAPI)",
-            ['Channel_0', 'Channel_1', 'Channel_2', 'Channel_3', 'Channel_4']
+            ch_options
         )
         
         config['cell_channels'] = st.multiselect(
             "Cell Marker Channels (e.g., CD5, CD68)",
-            ['Channel_0', 'Channel_1', 'Channel_2', 'Channel_3', 'Channel_4']
+            ch_options
         )
         
         config['signal_channels'] = st.multiselect(
             "Signal Channels (e.g., vRNA, vDNA)",
-            ['Channel_0', 'Channel_1', 'Channel_2', 'Channel_3', 'Channel_4']
+            ch_options
         )
         
         st.write("### Segmentation Parameters")

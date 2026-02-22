@@ -1819,6 +1819,41 @@ def channels_page():
     st.info("Go to **MicroSAM Analysis** tab to process your configured images")
 
 
+def _get_pipeline_channel_names(item):
+    """Return the effective channel-name list for a queue item.
+
+    These names are used both as keys in the ``channels`` dict passed to
+    ``pipeline.process`` and as display labels in ``configure_ui``.  Using the
+    same list in both places ensures that a config value produced by the UI
+    selector always matches a key in the channels dict.
+    """
+    img_info = item.get('img_info')
+    user_ch_names = item.get('channel_names')
+    # Channels dict construction in the run block caps at 5; mirror that here
+    # so the options shown in configure_ui exactly match the runtime keys.
+    _MAX_CH = 5
+    if img_info is None:
+        # img_info can be absent on very early/edge-case items; use user names
+        # when available, otherwise a single generic fallback.
+        if user_ch_names:
+            return [user_ch_names[i] for i in range(min(len(user_ch_names), _MAX_CH))]
+        return ['Channel_0']
+    kind = img_info.get('kind', 'rgb')
+    if kind == 'multichannel':
+        n = min(int(img_info['channels'].shape[0]), _MAX_CH)
+    elif kind == 'grayscale':
+        n = 1
+    else:  # rgb
+        n = 3
+    names = []
+    for idx in range(n):
+        if user_ch_names and idx < len(user_ch_names):
+            names.append(user_ch_names[idx])
+        else:
+            names.append(f'Channel_{idx}')
+    return names
+
+
 def pipeline_analysis_page():
     """Pipeline-based analysis interface with modular workflows"""
     
@@ -1875,13 +1910,8 @@ def pipeline_analysis_page():
     
     st.markdown("---")
     
-    # Pipeline-specific configuration UI
-    st.subheader("Pipeline Configuration")
-    config = pipeline.configure_ui(st)
-    
-    st.markdown("---")
-    
-    # Image selection for pipeline processing
+    # Image selection MUST come before configure_ui so that the actual
+    # (possibly user-renamed) channel names can be passed to the UI selectors.
     st.subheader("Image Selection")
     
     # Show images and let user select one to process
@@ -1903,6 +1933,25 @@ def pipeline_analysis_page():
         if item['name'] == selected_image_name:
             selected_item = item
             break
+    
+    # Derive channel names that will be used as dict keys during pipeline execution
+    available_ch_names = _get_pipeline_channel_names(selected_item) if selected_item else None
+    
+    # Debug expander – quickly reveals any key/display-name mismatches
+    with st.expander("Channel Information"):
+        if available_ch_names:
+            st.write("**Available channel keys (used internally):**", available_ch_names)
+        else:
+            st.write("No image selected yet.")
+    
+    st.markdown("---")
+    
+    # Pipeline-specific configuration UI – receives the real channel names so
+    # that its selectboxes show user-renamed labels and produce matching keys.
+    st.subheader("Pipeline Configuration")
+    config = pipeline.configure_ui(st, available_channels=available_ch_names)
+    
+    st.markdown("---")
     
     # Run button
     col_btn1, col_btn2 = st.columns(2)
@@ -1936,7 +1985,8 @@ def pipeline_analysis_page():
                 else:
                     image = load_image_from_bytes(selected_item['bytes'])
                 
-                # Build channel dictionary using user-defined channel names when available
+                # Build channel dictionary using the same names that were shown in
+                # configure_ui so that config values match channels dict keys.
                 channels = {}
                 user_ch_names = selected_item.get('channel_names')
                 if image.ndim == 2:
@@ -1947,6 +1997,25 @@ def pipeline_analysis_page():
                         label = (user_ch_names[idx] if user_ch_names and idx < len(user_ch_names)
                                  else f'Channel_{idx}')
                         channels[label] = image[:, :, idx]
+                
+                # Validate channel key consistency before calling the pipeline to
+                # give the user a clear error message rather than a raw KeyError.
+                nucleus_ch = config.get('nucleus_channel')
+                if nucleus_ch and nucleus_ch not in channels:
+                    st.error(
+                        f"Selected nucleus channel '{nucleus_ch}' not found in image channels "
+                        f"{list(channels.keys())}. Please re-select channels in Pipeline "
+                        f"Configuration after choosing this image."
+                    )
+                    return
+                missing = [ch for ch in config.get('cell_channels', []) if ch not in channels]
+                missing += [ch for ch in config.get('signal_channels', []) if ch not in channels]
+                if missing:
+                    st.error(
+                        f"Selected channel(s) {missing} not found in image channels "
+                        f"{list(channels.keys())}. Please re-select channels."
+                    )
+                    return
                 
                 # Validate channels
                 if not pipeline.validate_channels(list(channels.keys())):

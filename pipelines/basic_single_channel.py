@@ -28,7 +28,7 @@ class BasicSingleChannelPipeline(BasePipeline):
     required_channels = []  # Works with any image
     optional_channels = []
     
-    def configure_ui(self, st):
+    def configure_ui(self, st, available_channels=None):
         """UI for basic segmentation parameters"""
         
         st.write("### Segmentation Settings")
