@@ -157,70 +157,264 @@ def init_session_state():
 init_session_state()
 
 
-def render_threshold_params_ui() -> Dict[str, Any]:
+def render_threshold_params_ui(image_for_debug: Optional[np.ndarray] = None) -> Dict[str, Any]:
     """
-    Render UI controls for threshold-based box generation parameters.
-    
+    Render UI controls for the nucleus-grade threshold pipeline (B1-B6).
+
+    Args:
+        image_for_debug: Optional image to show debug previews (D).
+
     Returns:
-        Dictionary with threshold parameters
+        Dictionary with all nucleus pipeline parameters.
     """
-    st.write("**Threshold-based Box Generation Settings**")
-    with st.expander("Configure Threshold Parameters", expanded=True):
-        col_t1, col_t2 = st.columns(2)
-        with col_t1:
-            threshold_mode = st.selectbox(
-                "Threshold Mode",
-                options=["otsu", "manual", "off"],
-                index=0,
-                help="otsu: Automatic Otsu thresholding; manual: Manual threshold value; off: No thresholding"
+    st.write("**Nucleus Segmentation Pipeline Settings**")
+
+    with st.expander("B1 – Normalization", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            nucleus_normalize = st.checkbox(
+                "Percentile Normalization",
+                value=True,
+                help="Clip and rescale intensities to uint8 using percentile clipping"
             )
-            
-            threshold_value = 0.5
-            if threshold_mode == "manual":
-                threshold_value = st.slider(
-                    "Threshold Value",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.5,
-                    step=0.01,
-                    help="Threshold value for binary mask generation (0-1)"
-                )
-        
-        with col_t2:
-            min_box_area = st.number_input(
-                "Min Box Area (px)",
-                min_value=10,
-                max_value=100000,
-                value=100,
-                step=10,
-                help="Minimum area in pixels for candidate components"
+            nucleus_p_low = st.number_input(
+                "Low percentile",
+                min_value=0.0, max_value=10.0, value=1.0, step=0.5,
+                help="Lower percentile for clipping (default 1.0)"
             )
-            
-            max_box_area = st.number_input(
-                "Max Box Area (px)",
-                min_value=100,
-                max_value=1000000,
-                value=100000,
-                step=1000,
-                help="Maximum area in pixels for candidate components"
+        with col2:
+            nucleus_p_high = st.number_input(
+                "High percentile",
+                min_value=90.0, max_value=100.0, value=99.5, step=0.5,
+                help="Upper percentile for clipping (default 99.5)"
             )
-        
-        dilation_radius = st.slider(
-            "Dilation Radius",
-            min_value=0,
-            max_value=10,
-            value=0,
-            step=1,
-            help="Pixels to dilate mask before boxing (to capture full nuclei)"
+            nucleus_invert = st.checkbox(
+                "Invert intensity",
+                value=False,
+                help="Invert image before thresholding (for dark-background channels)"
+            )
+
+    with st.expander("B2 – Background Correction", expanded=False):
+        nucleus_bg_correction = st.checkbox(
+            "Apply background correction",
+            value=True,
+            help="Subtract estimated background to handle uneven illumination"
         )
-        
-        return {
-            'threshold_mode': threshold_mode,
-            'threshold_value': threshold_value,
-            'min_area': min_box_area,
-            'max_area': max_box_area,
-            'dilation_radius': dilation_radius
-        }
+        if nucleus_bg_correction:
+            col1, col2 = st.columns(2)
+            with col1:
+                nucleus_bg_method = st.selectbox(
+                    "Method",
+                    options=["gaussian", "tophat"],
+                    index=0,
+                    help="gaussian: subtract Gaussian-blurred background; tophat: morphological white top-hat"
+                )
+            with col2:
+                if nucleus_bg_method == "gaussian":
+                    nucleus_bg_sigma = st.number_input(
+                        "Gaussian sigma (px)",
+                        min_value=5.0, max_value=200.0, value=50.0, step=5.0,
+                        help="Must be much larger than nucleus diameter"
+                    )
+                    nucleus_bg_radius = 50
+                else:
+                    nucleus_bg_radius = st.number_input(
+                        "Top-hat radius (px)",
+                        min_value=5, max_value=200, value=50, step=5,
+                        help="Structuring element radius – must exceed nucleus size"
+                    )
+                    nucleus_bg_sigma = 50.0
+        else:
+            nucleus_bg_method = "gaussian"
+            nucleus_bg_sigma = 50.0
+            nucleus_bg_radius = 50
+
+    with st.expander("B3 – Thresholding", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            nucleus_threshold_mode = st.selectbox(
+                "Threshold mode",
+                options=["otsu", "manual", "adaptive_gaussian", "adaptive_mean"],
+                index=0,
+                help=(
+                    "otsu: global Otsu (robust for uniform illumination)\n"
+                    "manual: fixed threshold value\n"
+                    "adaptive_gaussian / adaptive_mean: tile-wise threshold for gradients"
+                )
+            )
+            nucleus_foreground_bright = st.checkbox(
+                "Foreground = bright objects",
+                value=True,
+                help="OFF = dark objects are foreground (e.g. H&E nuclei on bright background)"
+            )
+        with col2:
+            nucleus_threshold_value = 128.0
+            nucleus_adaptive_block_size = 51
+            nucleus_adaptive_C = 2.0
+            if nucleus_threshold_mode == "manual":
+                nucleus_threshold_value = st.slider(
+                    "Threshold value (0-255)",
+                    min_value=0, max_value=255, value=128, step=1,
+                    help="Applied after normalization to uint8"
+                )
+            elif nucleus_threshold_mode in ("adaptive_gaussian", "adaptive_mean"):
+                nucleus_adaptive_block_size = st.number_input(
+                    "Adaptive block size (odd)",
+                    min_value=11, max_value=201, value=51, step=2,
+                    help="Neighbourhood size for local threshold computation"
+                )
+                nucleus_adaptive_C = st.number_input(
+                    "Adaptive C (offset)",
+                    min_value=-20.0, max_value=20.0, value=2.0, step=0.5,
+                    help="Constant subtracted from local mean"
+                )
+
+    with st.expander("B4 – Morphological Cleanup", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            nucleus_morph_kernel_size = st.number_input(
+                "Kernel size (odd px)",
+                min_value=1, max_value=15, value=3, step=2,
+                help="Structuring element radius for open/close operations"
+            )
+            nucleus_morph_iterations = st.number_input(
+                "Iterations",
+                min_value=1, max_value=5, value=1, step=1
+            )
+        with col2:
+            nucleus_morph_order = st.selectbox(
+                "Order",
+                options=["open_close", "close_open"],
+                index=0,
+                help="open_close: remove noise then fill gaps; close_open: fill gaps then remove noise"
+            )
+
+    with st.expander("B5 – Watershed Split (recommended for dense tissue)", expanded=True):
+        nucleus_use_watershed = st.checkbox(
+            "Split touching nuclei (watershed)",
+            value=True,
+            help="Distance transform + watershed to separate merged nucleus blobs"
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            nucleus_seed_min_distance = st.number_input(
+                "Seed min distance (px)",
+                min_value=1, max_value=30, value=5, step=1,
+                help="Minimum distance between watershed seeds (≈ nucleus radius)"
+            )
+        with col2:
+            nucleus_min_area_px = st.number_input(
+                "Min candidate area (px)",
+                min_value=10, max_value=10000, value=100, step=10,
+                help="Discard candidates smaller than this"
+            )
+        with col3:
+            nucleus_max_area_px = st.number_input(
+                "Max candidate area (px)",
+                min_value=100, max_value=100000, value=5000, step=100,
+                help="Discard candidates larger than this (merged blobs)"
+            )
+
+    with st.expander("B6 – Prompt Type", expanded=True):
+        nucleus_prompt_type = st.radio(
+            "Prompt type",
+            options=["points", "boxes"],
+            index=0,
+            help="points (centroid): recommended for many nuclei; boxes: tighter fit"
+        )
+        nucleus_bbox_padding = 3
+        if nucleus_prompt_type == "boxes":
+            nucleus_bbox_padding = st.number_input(
+                "Bounding box padding (px)",
+                min_value=0, max_value=20, value=3, step=1,
+                help="Extra margin added around each bounding box"
+            )
+
+    # ---- D: Debug panel -------------------------------------------------
+    if image_for_debug is not None:
+        with st.expander("🔬 Debug: Nucleus Pipeline Previews", expanded=False):
+            st.caption(
+                "Shows intermediate results for the current parameter settings. "
+                "Use this to diagnose polarity, gradient, or watershed issues."
+            )
+            try:
+                from utils.microsam_adapter import compute_candidates_from_threshold
+                _pts, _pl, _boxes, _dbg = compute_candidates_from_threshold(
+                    image=image_for_debug,
+                    normalize=nucleus_normalize,
+                    p_low=nucleus_p_low,
+                    p_high=nucleus_p_high,
+                    invert_intensity=nucleus_invert,
+                    bg_correction=nucleus_bg_correction,
+                    bg_method=nucleus_bg_method,
+                    bg_sigma=nucleus_bg_sigma,
+                    bg_radius=nucleus_bg_radius,
+                    threshold_mode=nucleus_threshold_mode,
+                    threshold_value=nucleus_threshold_value,
+                    adaptive_block_size=nucleus_adaptive_block_size,
+                    adaptive_C=nucleus_adaptive_C,
+                    foreground_bright=nucleus_foreground_bright,
+                    morph_kernel_size=nucleus_morph_kernel_size,
+                    morph_iterations=nucleus_morph_iterations,
+                    morph_order=nucleus_morph_order,
+                    use_watershed=nucleus_use_watershed,
+                    seed_min_distance=nucleus_seed_min_distance,
+                    min_area_px=nucleus_min_area_px,
+                    max_area_px=nucleus_max_area_px,
+                    prompt_type=nucleus_prompt_type,
+                    bbox_padding=nucleus_bbox_padding,
+                )
+                dbg_col1, dbg_col2 = st.columns(2)
+                with dbg_col1:
+                    if "normalized" in _dbg:
+                        st.image(_dbg["normalized"], caption="Normalized", use_container_width=True, clamp=True)
+                    if "binary_mask" in _dbg:
+                        st.image(_dbg["binary_mask"], caption="Binary mask", use_container_width=True, clamp=True)
+                with dbg_col2:
+                    if "bg_corrected" in _dbg:
+                        st.image(_dbg["bg_corrected"], caption="Background corrected", use_container_width=True, clamp=True)
+                    if "distance" in _dbg:
+                        dist_vis = (_dbg["distance"] / (_dbg["distance"].max() + 1e-8) * 255.0).astype(np.uint8)
+                        st.image(dist_vis, caption="Distance transform", use_container_width=True, clamp=True)
+                n_before = _dbg.get("n_before", "?")
+                n_after = _dbg.get("n_after", "?")
+                st.info(
+                    f"Candidates: **{n_before}** before area filter → **{n_after}** after "
+                    f"(min={nucleus_min_area_px} px, max={nucleus_max_area_px} px)"
+                )
+            except Exception as _e:
+                st.warning(f"Debug preview failed: {_e}")
+
+    return {
+        # B1
+        'nucleus_normalize': nucleus_normalize,
+        'nucleus_p_low': nucleus_p_low,
+        'nucleus_p_high': nucleus_p_high,
+        'nucleus_invert': nucleus_invert,
+        # B2
+        'nucleus_bg_correction': nucleus_bg_correction,
+        'nucleus_bg_method': nucleus_bg_method,
+        'nucleus_bg_sigma': nucleus_bg_sigma,
+        'nucleus_bg_radius': nucleus_bg_radius,
+        # B3
+        'nucleus_threshold_mode': nucleus_threshold_mode,
+        'nucleus_threshold_value': nucleus_threshold_value,
+        'nucleus_adaptive_block_size': nucleus_adaptive_block_size,
+        'nucleus_adaptive_C': nucleus_adaptive_C,
+        'nucleus_foreground_bright': nucleus_foreground_bright,
+        # B4
+        'nucleus_morph_kernel_size': nucleus_morph_kernel_size,
+        'nucleus_morph_iterations': nucleus_morph_iterations,
+        'nucleus_morph_order': nucleus_morph_order,
+        # B5
+        'nucleus_use_watershed': nucleus_use_watershed,
+        'nucleus_seed_min_distance': nucleus_seed_min_distance,
+        'nucleus_min_area_px': nucleus_min_area_px,
+        'nucleus_max_area_px': nucleus_max_area_px,
+        # B6
+        'nucleus_prompt_type': nucleus_prompt_type,
+        'nucleus_bbox_padding': nucleus_bbox_padding,
+    }
 
 
 def authentication_page():
@@ -715,13 +909,19 @@ def run_analysis_on_item(item: Dict[str, Any], prompt_mode: str = "auto_box",
     # Prepare threshold parameters for auto_box_from_threshold mode
     threshold_kwargs = {}
     if prompt_mode == "auto_box_from_threshold" and threshold_params:
-        threshold_kwargs = {
-            'threshold_mode': threshold_params.get('threshold_mode', 'otsu'),
-            'threshold_value': threshold_params.get('threshold_value', 0.5),
-            'box_min_area': threshold_params.get('min_area', 100),
-            'box_max_area': threshold_params.get('max_area', 100000),
-            'box_dilation_radius': threshold_params.get('dilation_radius', 0)
-        }
+        # Pass all nucleus-pipeline parameters (B1-B6) through to the predictor
+        for key in (
+            'nucleus_normalize', 'nucleus_p_low', 'nucleus_p_high', 'nucleus_invert',
+            'nucleus_bg_correction', 'nucleus_bg_method', 'nucleus_bg_sigma', 'nucleus_bg_radius',
+            'nucleus_threshold_mode', 'nucleus_threshold_value',
+            'nucleus_adaptive_block_size', 'nucleus_adaptive_C', 'nucleus_foreground_bright',
+            'nucleus_morph_kernel_size', 'nucleus_morph_iterations', 'nucleus_morph_order',
+            'nucleus_use_watershed', 'nucleus_seed_min_distance',
+            'nucleus_min_area_px', 'nucleus_max_area_px',
+            'nucleus_prompt_type', 'nucleus_bbox_padding',
+        ):
+            if key in threshold_params:
+                threshold_kwargs[key] = threshold_params[key]
     
     # Run segmentation on the processed input
     mask = st.session_state.predictor.predict(
@@ -1883,8 +2083,8 @@ def classic_analysis_page():
                 options=["auto_box", "auto_box_from_threshold", "full_box", "point"],
                 index=0,
                 help=(
-                    "auto_box: Auto-detect tissue region\n"
-                    "auto_box_from_threshold: Generate boxes from thresholded channel (best for nuclei)\n"
+                    "auto_box: Auto-detect tissue/ROI bounding box (tissue detection only, not nucleus segmentation)\n"
+                    "auto_box_from_threshold: Nucleus-grade instance segmentation via threshold + watershed (best for DAPI/nuclei)\n"
                     "full_box: Use entire image\n"
                     "point: Use center point"
                 )
@@ -2345,8 +2545,8 @@ def classic_analysis_page():
             options=["auto_box", "auto_box_from_threshold", "full_box", "point"],
             index=0,
             help=(
-                "auto_box: Auto-detect tissue region\n"
-                "auto_box_from_threshold: Generate boxes from thresholded channel (best for nuclei)\n"
+                "auto_box: Auto-detect tissue/ROI bounding box (tissue detection only, not nucleus segmentation)\n"
+                "auto_box_from_threshold: Nucleus-grade instance segmentation via threshold + watershed (best for DAPI/nuclei)\n"
                 "full_box: Use entire image\n"
                 "point: Use center point"
             )
@@ -2448,13 +2648,18 @@ def classic_analysis_page():
                         # Prepare threshold parameters for auto_box_from_threshold mode
                         threshold_kwargs = {}
                         if prompt_mode == "auto_box_from_threshold" and threshold_params:
-                            threshold_kwargs = {
-                                'threshold_mode': threshold_params.get('threshold_mode', 'otsu'),
-                                'threshold_value': threshold_params.get('threshold_value', 0.5),
-                                'box_min_area': threshold_params.get('min_area', 100),
-                                'box_max_area': threshold_params.get('max_area', 100000),
-                                'box_dilation_radius': threshold_params.get('dilation_radius', 0)
-                            }
+                            for key in (
+                                'nucleus_normalize', 'nucleus_p_low', 'nucleus_p_high', 'nucleus_invert',
+                                'nucleus_bg_correction', 'nucleus_bg_method', 'nucleus_bg_sigma', 'nucleus_bg_radius',
+                                'nucleus_threshold_mode', 'nucleus_threshold_value',
+                                'nucleus_adaptive_block_size', 'nucleus_adaptive_C', 'nucleus_foreground_bright',
+                                'nucleus_morph_kernel_size', 'nucleus_morph_iterations', 'nucleus_morph_order',
+                                'nucleus_use_watershed', 'nucleus_seed_min_distance',
+                                'nucleus_min_area_px', 'nucleus_max_area_px',
+                                'nucleus_prompt_type', 'nucleus_bbox_padding',
+                            ):
+                                if key in threshold_params:
+                                    threshold_kwargs[key] = threshold_params[key]
                         
                         mask = st.session_state.predictor.predict(
                             image,
