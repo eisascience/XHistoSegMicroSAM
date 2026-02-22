@@ -38,10 +38,15 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
     required_channels = ['nucleus']
     optional_channels = ['cell_marker', 'signal']
     
-    def configure_ui(self, st, available_channels=None):
+    def configure_ui(self, st, available_channels=None, widget_key_prefix=None):
         """Configure channel assignments and parameters"""
         
         config = {}
+        
+        # Use a stable key prefix so that widget state is scoped to the selected
+        # image.  When the user switches images the prefix changes, Streamlit
+        # treats the widgets as new, and stale channel selections are cleared.
+        prefix = widget_key_prefix or "mch_pipeline"
         
         st.write("### Channel Assignment")
         st.write("Assign roles to your image channels")
@@ -55,34 +60,42 @@ class MultiChannelHierarchicalPipeline(BasePipeline):
         
         config['nucleus_channel'] = st.selectbox(
             "Nucleus Channel (e.g., DAPI)",
-            ch_options
+            ch_options,
+            key=f"{prefix}_nucleus"
         )
         
+        # Filter any previously cached multiselect defaults to only include
+        # channels that exist in this image, preventing stale-state errors.
         config['cell_channels'] = st.multiselect(
             "Cell Marker Channels (e.g., CD5, CD68)",
-            ch_options
+            ch_options,
+            key=f"{prefix}_cell"
         )
         
         config['signal_channels'] = st.multiselect(
             "Signal Channels (e.g., vRNA, vDNA)",
-            ch_options
+            ch_options,
+            key=f"{prefix}_signal"
         )
         
         st.write("### Segmentation Parameters")
         
         config['nucleus_mode'] = st.selectbox(
             "Nucleus Segmentation Mode",
-            ['auto_box_from_threshold', 'auto_box']
+            ['auto_box_from_threshold', 'auto_box'],
+            key=f"{prefix}_nucleus_mode"
         )
         
         config['cell_mode'] = st.selectbox(
             "Cell Segmentation Mode",
-            ['point', 'auto_box']
+            ['point', 'auto_box'],
+            key=f"{prefix}_cell_mode"
         )
         
         config['compartmental_analysis'] = st.checkbox(
             "Enable compartmental analysis (nuclear vs cytoplasmic)",
-            value=True
+            value=True,
+            key=f"{prefix}_compartmental"
         )
         
         return config

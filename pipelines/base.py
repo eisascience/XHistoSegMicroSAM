@@ -36,7 +36,8 @@ class BasePipeline(ABC):
         self.config = {}
     
     @abstractmethod
-    def configure_ui(self, st_module, available_channels: Optional[List[str]] = None) -> Dict[str, Any]:
+    def configure_ui(self, st_module, available_channels: Optional[List[str]] = None,
+                     widget_key_prefix: Optional[str] = None) -> Dict[str, Any]:
         """
         Render pipeline-specific UI controls in Streamlit.
         
@@ -45,6 +46,9 @@ class BasePipeline(ABC):
             available_channels: List of channel names available in the selected image.
                 When provided, UI selectors should offer these names instead of
                 generic placeholders so that user-renamed channels appear correctly.
+            widget_key_prefix: Optional prefix for Streamlit widget keys.
+                Use the selected image name so that channel selections are scoped
+                per-image and do not persist when the user switches images.
             
         Returns:
             Dictionary of user-configured parameters

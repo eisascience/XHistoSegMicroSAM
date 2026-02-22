@@ -1938,9 +1938,27 @@ def pipeline_analysis_page():
     available_ch_names = _get_pipeline_channel_names(selected_item) if selected_item else None
     
     # Debug expander – quickly reveals any key/display-name mismatches
-    with st.expander("Channel Information"):
+    with st.expander("🔍 Channel Debug Info"):
         if available_ch_names:
-            st.write("**Available channel keys (used internally):**", available_ch_names)
+            st.write("**Available channel keys (used as dict keys in pipeline):**")
+            for idx, name in enumerate(available_ch_names):
+                st.write(f"  - `ch{idx}` → `{name}`")
+            st.write("**Selected in config:**")
+            nucleus_sel = config.get('nucleus_channel', '(none)')
+            cell_sel = config.get('cell_channels', [])
+            sig_sel = config.get('signal_channels', [])
+            st.write(f"  - Nucleus: `{nucleus_sel}`")
+            st.write(f"  - Cell markers: `{cell_sel}`")
+            st.write(f"  - Signals: `{sig_sel}`")
+            missing_ch = [c for c in ([nucleus_sel] if nucleus_sel else []) + cell_sel + sig_sel
+                          if c not in available_ch_names]
+            if missing_ch:
+                st.warning(
+                    f"⚠️ Channels not found in image: {missing_ch}. "
+                    "These selections are stale -- please re-select channels above."
+                )
+            else:
+                st.success("✅ All selected channels are present in the image.")
         else:
             st.write("No image selected yet.")
     
@@ -1948,8 +1966,11 @@ def pipeline_analysis_page():
     
     # Pipeline-specific configuration UI – receives the real channel names so
     # that its selectboxes show user-renamed labels and produce matching keys.
+    # The widget_key_prefix scopes all widget state to the selected image so
+    # that switching images resets the channel selectors automatically.
     st.subheader("Pipeline Configuration")
-    config = pipeline.configure_ui(st, available_channels=available_ch_names)
+    config = pipeline.configure_ui(st, available_channels=available_ch_names,
+                                   widget_key_prefix=selected_image_name)
     
     st.markdown("---")
     
@@ -2024,12 +2045,59 @@ def pipeline_analysis_page():
                     # Run pipeline
                     results = pipeline.process(image, channels, st.session_state.predictor, config)
                     
+                    # Build channel metadata (stable index + display name) for config JSON
+                    ch_keys = list(channels.keys())
+                    nucleus_ch_name = config.get('nucleus_channel', '')
+                    cell_ch_names = config.get('cell_channels', [])
+                    sig_ch_names = config.get('signal_channels', [])
+                    
+                    def _ch_meta(name):
+                        idx = ch_keys.index(name) if name in ch_keys else None
+                        ch_id = f'ch{idx}' if idx is not None else 'unknown'
+                        return {'id': ch_id, 'name': name}
+                    
+                    run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    img_info = selected_item.get('img_info', {}) or {}
+                    pipeline_config_json = {
+                        'pipeline': selected_pipeline_name,
+                        'run_id': f"{selected_pipeline_name}__{run_ts}",
+                        'created_at': datetime.now().isoformat(),
+                        'image': {
+                            'filename': selected_image_name,
+                            'shape': list(img_info.get('shape_original', [])),
+                            'dtype': str(img_info.get('dtype', '')),
+                        },
+                        'channels': {
+                            'nucleus': _ch_meta(nucleus_ch_name) if nucleus_ch_name else None,
+                            'cell_markers': [_ch_meta(c) for c in cell_ch_names],
+                            'signals': [_ch_meta(c) for c in sig_ch_names],
+                        },
+                        'pipeline_params': {
+                            k: v for k, v in config.items()
+                            if k not in ('nucleus_channel', 'cell_channels', 'signal_channels')
+                        },
+                    }
+                    
+                    # Derive a meaningful filename for the config JSON.
+                    # Sanitize channel name parts so the filename is safe across OSes.
+                    def _safe(s):
+                        import re
+                        return re.sub(r'[^A-Za-z0-9_.-]', '_', s)
+                    
+                    nuc_label = _safe(nucleus_ch_name) if nucleus_ch_name else 'noNucleus'
+                    marker_labels = '-'.join(_safe(c) for c in cell_ch_names) if cell_ch_names else 'noMarkers'
+                    config_filename = (
+                        f"{selected_pipeline_name}__{nuc_label}__{marker_labels}__{run_ts}.json"
+                    )
+                    
                     # Store results
                     st.session_state.pipeline_results = {
                         'pipeline_name': selected_pipeline_name,
                         'image_name': selected_image_name,
                         'results': results,
-                        'config': config
+                        'config': config,
+                        'pipeline_config_json': pipeline_config_json,
+                        'config_filename': config_filename,
                     }
                     
                     st.success(f"Pipeline completed successfully!")
@@ -2057,6 +2125,19 @@ def pipeline_analysis_page():
         result_pipeline.visualize(st.session_state.pipeline_results['results'], st)
         
         st.markdown("---")
+        
+        # Config JSON download button
+        if 'pipeline_config_json' in st.session_state.pipeline_results:
+            cfg_json_bytes = json.dumps(
+                st.session_state.pipeline_results['pipeline_config_json'], indent=2
+            ).encode()
+            st.download_button(
+                label="💾 Download Pipeline Config JSON",
+                data=cfg_json_bytes,
+                file_name=st.session_state.pipeline_results.get('config_filename', 'pipeline_config.json'),
+                mime="application/json",
+                help="Download the run configuration (pipeline, channels, parameters, metadata)"
+            )
         
         # Export button
         if st.button("Export Pipeline Results", type="secondary"):
